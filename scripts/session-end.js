@@ -1,0 +1,622 @@
+// src/hooks/session-end.ts
+import { readFileSync as readFileSync2, existsSync as existsSync3 } from "fs";
+import { createHash } from "crypto";
+import { join as join3 } from "path";
+
+// src/db.ts
+import { createClient } from "@libsql/client";
+import { existsSync, mkdirSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+var CORTEX_DIR = join(homedir(), ".apsolut");
+var DB_PATH = join(CORTEX_DIR, "memory.db");
+var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
+var MODELS_DIR = join(CORTEX_DIR, "models");
+var _db = null;
+var _initialized = false;
+async function getDb() {
+  if (_db && _initialized)
+    return _db;
+  if (!existsSync(CORTEX_DIR))
+    mkdirSync(CORTEX_DIR, { recursive: true });
+  if (!existsSync(MODELS_DIR))
+    mkdirSync(MODELS_DIR, { recursive: true });
+  if (!_db) {
+    _db = createClient({ url: `file:${DB_PATH}` });
+  }
+  if (!_initialized) {
+    await _db.executeMultiple(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA foreign_keys = ON;
+      PRAGMA cache_size = -32000;
+
+      CREATE TABLE IF NOT EXISTS projects (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        path         TEXT,
+        created_at   INTEGER NOT NULL,
+        last_session INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id                 TEXT PRIMARY KEY,
+        project_id         TEXT NOT NULL REFERENCES projects(id),
+        started_at         INTEGER NOT NULL,
+        ended_at           INTEGER,
+        summary            TEXT,
+        memories_injected  INTEGER NOT NULL DEFAULT 0,
+        memories_stored    INTEGER NOT NULL DEFAULT 0,
+        tool_failures      INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project
+        ON sessions(project_id, started_at DESC);
+
+      CREATE TABLE IF NOT EXISTS observations (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT NOT NULL REFERENCES sessions(id),
+        project_id  TEXT NOT NULL,
+        tool_name   TEXT,
+        content     TEXT NOT NULL,
+        category    TEXT,
+        created_at  INTEGER NOT NULL,
+        promoted    INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id);
+      CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memories (
+        id           TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        tier         TEXT NOT NULL DEFAULT 'semantic',
+        category     TEXT NOT NULL DEFAULT 'insight',
+        trust        TEXT NOT NULL DEFAULT 'observed',
+        content      TEXT NOT NULL,
+        context      TEXT,
+        source       TEXT NOT NULL DEFAULT 'manual',
+        embedding    F32_BLOB(384),
+        weight       REAL NOT NULL DEFAULT 1.0,
+        used_count   INTEGER NOT NULL DEFAULT 0,
+        last_used    INTEGER,
+        created_at   INTEGER NOT NULL,
+        session_id   TEXT REFERENCES sessions(id),
+        flagged      INTEGER NOT NULL DEFAULT 0,
+        flag_reason  TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mem_project ON memories(project_id);
+      CREATE INDEX IF NOT EXISTS idx_mem_weight  ON memories(project_id, weight DESC);
+      CREATE INDEX IF NOT EXISTS idx_mem_tier    ON memories(project_id, tier);
+      CREATE INDEX IF NOT EXISTS idx_mem_trust   ON memories(project_id, trust);
+      CREATE INDEX IF NOT EXISTS idx_mem_flagged ON memories(project_id, flagged)
+        WHERE flagged = 1;
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        content, context,
+        content='memories',
+        content_rowid='rowid',
+        tokenize='porter ascii'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, content, context)
+        VALUES (new.rowid, new.content, COALESCE(new.context, ''));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content, context)
+        VALUES ('delete', old.rowid, old.content, COALESCE(old.context, ''));
+        INSERT INTO memories_fts(rowid, content, context)
+        VALUES (new.rowid, new.content, COALESCE(new.context, ''));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content, context)
+        VALUES ('delete', old.rowid, old.content, COALESCE(old.context, ''));
+      END;
+
+      CREATE TABLE IF NOT EXISTS file_hashes (
+        project_id TEXT NOT NULL,
+        path       TEXT NOT NULL,
+        hash       TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (project_id, path)
+      );
+    `);
+    _initialized = true;
+  }
+  return _db;
+}
+function vecToSql(arr) {
+  return JSON.stringify(Array.from(arr));
+}
+async function upsertSession(db, s) {
+  const existing = await db.execute({
+    sql: "SELECT id FROM sessions WHERE id = ?",
+    args: [s.id]
+  });
+  if (existing.rows.length > 0) {
+    const sets = [];
+    const vals = [];
+    if (s.ended_at !== undefined) {
+      sets.push("ended_at = ?");
+      vals.push(s.ended_at);
+    }
+    if (s.summary !== undefined) {
+      sets.push("summary = ?");
+      vals.push(s.summary);
+    }
+    if (s.memories_stored !== undefined) {
+      sets.push("memories_stored = ?");
+      vals.push(s.memories_stored);
+    }
+    if (s.tool_failures !== undefined) {
+      sets.push("tool_failures = ?");
+      vals.push(s.tool_failures);
+    }
+    if (sets.length) {
+      vals.push(s.id);
+      await db.execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args: vals });
+    }
+  } else {
+    await db.execute({
+      sql: "INSERT INTO sessions (id, project_id, started_at) VALUES (?, ?, ?)",
+      args: [s.id, s.project_id, Date.now()]
+    });
+  }
+}
+async function getSessionObservations(db, sessionId) {
+  const result = await db.execute({
+    sql: "SELECT tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
+    args: [sessionId]
+  });
+  return result.rows.map((r) => ({
+    tool_name: r.tool_name,
+    content: r.content,
+    category: r.category
+  }));
+}
+async function getUnprocessedObservations(db, projectId, excludeSessionId) {
+  const result = await db.execute({
+    sql: "SELECT tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT 50",
+    args: [projectId, excludeSessionId]
+  });
+  return result.rows.map((r) => ({
+    tool_name: r.tool_name,
+    content: r.content,
+    category: r.category,
+    session_id: r.session_id
+  }));
+}
+async function markProjectObservationsPromoted(db, projectId) {
+  await db.execute({
+    sql: "UPDATE observations SET promoted = 1 WHERE project_id = ? AND promoted = 0",
+    args: [projectId]
+  });
+}
+async function findDuplicate(db, projectId, embedding, threshold = 0.92) {
+  const maxDistance = 1 - threshold;
+  const result = await db.execute({
+    sql: `SELECT id, weight, vector_distance_cos(embedding, vector(?)) as distance
+          FROM memories
+          WHERE project_id = ? AND embedding IS NOT NULL
+          ORDER BY distance LIMIT 1`,
+    args: [vecToSql(embedding), projectId]
+  });
+  if (result.rows.length === 0)
+    return null;
+  const row = result.rows[0];
+  const distance = row.distance;
+  if (distance <= maxDistance) {
+    return { id: row.id, weight: row.weight };
+  }
+  return null;
+}
+async function bumpWeight(db, id, boost = 0.1) {
+  await db.execute({
+    sql: "UPDATE memories SET weight = MIN(weight + ?, 3.0), last_used = ? WHERE id = ?",
+    args: [boost, Date.now(), id]
+  });
+}
+async function insertMemory(db, m) {
+  const id = crypto.randomUUID();
+  if (m.embedding) {
+    await db.execute({
+      sql: `INSERT INTO memories
+              (id, project_id, tier, category, trust, content, context,
+               source, embedding, weight, used_count, created_at, session_id)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, ?, vector(?), ?, 0, ?, ?)`,
+      args: [
+        id,
+        m.project_id,
+        m.tier,
+        m.category,
+        m.trust,
+        m.content,
+        m.context ?? null,
+        m.source,
+        vecToSql(m.embedding),
+        m.weight,
+        Date.now(),
+        m.session_id ?? null
+      ]
+    });
+  } else {
+    await db.execute({
+      sql: `INSERT INTO memories
+              (id, project_id, tier, category, trust, content, context,
+               source, embedding, weight, used_count, created_at, session_id)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+      args: [
+        id,
+        m.project_id,
+        m.tier,
+        m.category,
+        m.trust,
+        m.content,
+        m.context ?? null,
+        m.source,
+        m.weight,
+        Date.now(),
+        m.session_id ?? null
+      ]
+    });
+  }
+  return id;
+}
+async function decayAndPrune(db, projectId) {
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const decayResult = await db.execute({
+    sql: `UPDATE memories
+          SET weight = weight * CASE
+            WHEN trust IN ('proven', 'canonical') THEN 1.0
+            WHEN trust = 'validated' THEN 0.98
+            ELSE 0.95
+          END
+          WHERE project_id = ?
+            AND trust NOT IN ('canonical')
+            AND (last_used IS NULL OR last_used < ?)`,
+    args: [projectId, cutoff]
+  });
+  const pruneResult = await db.execute({
+    sql: `DELETE FROM memories
+          WHERE project_id = ? AND weight < 0.1 AND used_count > 3
+            AND trust NOT IN ('proven', 'canonical')`,
+    args: [projectId]
+  });
+  return {
+    decayed: decayResult.rowsAffected,
+    pruned: pruneResult.rowsAffected
+  };
+}
+async function snapshotFileHashes(db, projectId, hashes) {
+  const now = Date.now();
+  await db.batch(hashes.map((h) => ({
+    sql: "INSERT OR REPLACE INTO file_hashes (project_id, path, hash, updated_at) VALUES (?, ?, ?, ?)",
+    args: [projectId, h.path, h.hash, now]
+  })), "write");
+}
+async function diffFileHashes(db, projectId, currentHashes) {
+  const changed = [];
+  for (const cur of currentHashes) {
+    const result = await db.execute({
+      sql: "SELECT hash FROM file_hashes WHERE project_id = ? AND path = ?",
+      args: [projectId, cur.path]
+    });
+    const prev = result.rows[0];
+    if (!prev || prev.hash !== cur.hash) {
+      changed.push(cur.path);
+    }
+  }
+  return changed;
+}
+
+// src/compress.ts
+import Anthropic from "@anthropic-ai/sdk";
+import { existsSync as existsSync2, readFileSync, writeFileSync } from "fs";
+import { join as join2 } from "path";
+import { homedir as homedir2 } from "os";
+var BREAKER_PATH = join2(homedir2(), ".apsolut", "compression-state.json");
+var MAX_FAILURES = 3;
+var COOLDOWN_MS = 60 * 60 * 1000;
+function readBreaker() {
+  try {
+    if (existsSync2(BREAKER_PATH))
+      return JSON.parse(readFileSync(BREAKER_PATH, "utf-8"));
+  } catch {}
+  return { failures: 0, lastFailure: 0 };
+}
+function writeBreaker(state) {
+  try {
+    writeFileSync(BREAKER_PATH, JSON.stringify(state));
+  } catch {}
+}
+function isBreakerOpen() {
+  const state = readBreaker();
+  return state.failures >= MAX_FAILURES && Date.now() - state.lastFailure < COOLDOWN_MS;
+}
+function recordFailure() {
+  const state = readBreaker();
+  writeBreaker({ failures: state.failures + 1, lastFailure: Date.now() });
+}
+function resetBreaker() {
+  writeBreaker({ failures: 0, lastFailure: 0 });
+}
+var SYSTEM_PROMPT = `You are analyzing a Claude Code session to extract durable memories and write a session summary.
+
+Given observations from a coding session, output ONLY valid JSON with this shape:
+{
+  "memories": [
+    {
+      "tier": "episodic|semantic|procedural|strategic|meta",
+      "category": "correction|insight|decision|discovery|fact|pattern",
+      "content": "specific, actionable, one sentence",
+      "context": "optional: what was happening"
+    }
+  ],
+  "summary": "2-3 sentence human-readable recap of this session"
+}
+
+Memory tiers:
+- episodic: specific events, what happened, corrections
+- semantic: stable facts about the codebase
+- procedural: how-to patterns, SOPs, step-by-step knowledge
+- strategic: architectural decisions, conventions, non-negotiables
+- meta: how to work effectively with this project
+
+Rules:
+- Max 5 memories. Fewer if the session was simple.
+- Corrections (tried X, actually Y) get highest priority — always store these
+- Skip temporary or task-specific details
+- Be concrete: file paths, library names, specific patterns
+- Summary should help the next session pick up context fast
+- If nothing worth preserving happened, return {"memories":[],"summary":"Short session with no significant findings."}
+- Return ONLY the JSON object, no markdown, no preamble`;
+async function compressWithAnthropic(observations, project) {
+  const client = new Anthropic;
+  const obsText = observations.map((o, i) => `[${i + 1}]${o.tool_name ? ` Tool: ${o.tool_name}` : ""}
+${o.content}`).join(`
+
+---
+
+`);
+  const response = await client.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages: [
+      {
+        role: "user",
+        content: `Project: ${project}
+
+Session observations:
+
+${obsText}`
+      }
+    ]
+  });
+  const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  return parseResult(text);
+}
+async function compressWithOllama(observations, project) {
+  const OLLAMA_URL = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+  const MODEL = process.env.CORTEX_OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  const obsText = observations.map((o, i) => `[${i + 1}]${o.tool_name ? ` Tool: ${o.tool_name}` : ""}
+${o.content}`).join(`
+
+---
+
+`);
+  const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL,
+      prompt: `${SYSTEM_PROMPT}
+
+Project: ${project}
+
+Session observations:
+
+${obsText}
+
+Respond ONLY with valid JSON:`,
+      stream: false
+    }),
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama returned ${response.status}: ${await response.text()}`);
+  }
+  const data = await response.json();
+  return parseResult(data.response);
+}
+function parseResult(raw) {
+  const clean = raw.replace(/```json|```/g, "").trim();
+  const parsed = JSON.parse(clean);
+  return {
+    memories: Array.isArray(parsed.memories) ? parsed.memories : [],
+    summary: typeof parsed.summary === "string" ? parsed.summary : ""
+  };
+}
+async function compressSession(observations, project) {
+  if (observations.length === 0) {
+    return { memories: [], summary: "" };
+  }
+  if (isBreakerOpen()) {
+    console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
+    return { memories: [], summary: "" };
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const result = await compressWithAnthropic(observations, project);
+      resetBreaker();
+      return result;
+    } catch (e) {
+      console.error(`[apsolut-cortex] Haiku compression failed: ${e}`);
+      console.error("[apsolut-cortex] Falling back to Ollama...");
+    }
+  }
+  try {
+    const result = await compressWithOllama(observations, project);
+    resetBreaker();
+    console.error("[apsolut-cortex] Used Ollama for compression.");
+    return result;
+  } catch (e) {
+    recordFailure();
+    const msg = [
+      "",
+      "╔══════════════════════════════════════════════════════════════╗",
+      "║  apsolut-cortex: SESSION COMPRESSION FAILED                 ║",
+      "║                                                              ║",
+      "║  Neither Anthropic API nor Ollama is available.             ║",
+      "║                                                              ║",
+      "║  To fix:                                                     ║",
+      "║  Option 1: Set ANTHROPIC_API_KEY in your environment         ║",
+      "║  Option 2: Run Ollama locally (ollama serve)                 ║",
+      "║            Default model: qwen2.5-coder:7b                  ║",
+      "║            Custom model:  CORTEX_OLLAMA_MODEL=<model>        ║",
+      "║                                                              ║",
+      "║  Observations were saved. They will be compressed next       ║",
+      "║  session when a compression provider is available.           ║",
+      "╚══════════════════════════════════════════════════════════════╝",
+      ""
+    ].join(`
+`);
+    console.error(msg);
+    return { memories: [], summary: "" };
+  }
+}
+
+// src/embed.ts
+import { pipeline, env } from "@xenova/transformers";
+env.cacheDir = MODELS_DIR;
+env.allowRemoteModels = true;
+var _embedder = null;
+async function getEmbedder() {
+  if (_embedder)
+    return _embedder;
+  _embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+  return _embedder;
+}
+async function embed(text) {
+  const e = await getEmbedder();
+  const out = await e(text, { pooling: "mean", normalize: true });
+  return out.data;
+}
+
+// src/hooks/session-end.ts
+var TRACKED_FILES = [
+  "package.json",
+  "tsconfig.json",
+  "tsconfig.base.json",
+  ".env",
+  ".env.local",
+  "cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  "composer.json",
+  "Gemfile",
+  "vite.config.ts",
+  "next.config.js",
+  "next.config.ts"
+];
+function hashFile(path) {
+  try {
+    if (!existsSync3(path))
+      return null;
+    return createHash("sha256").update(readFileSync2(path)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+async function main() {
+  const raw = await new Promise((resolve) => {
+    let d = "";
+    process.stdin.setEncoding("utf-8");
+    process.stdin.on("data", (c) => d += c);
+    process.stdin.on("end", () => resolve(d));
+  });
+  let data = {};
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    process.exit(0);
+  }
+  const cwd = data.cwd ?? process.cwd();
+  const sessionId = data.session_id ?? "unknown";
+  const projectFile = join3(cwd, ".apsolut", "project.json");
+  if (!existsSync3(projectFile))
+    process.exit(0);
+  let project = null;
+  try {
+    project = JSON.parse(readFileSync2(projectFile, "utf-8"));
+  } catch {
+    process.exit(0);
+  }
+  if (!project?.id)
+    process.exit(0);
+  try {
+    const db = await getDb();
+    const currentObs = await getSessionObservations(db, sessionId);
+    const staleObs = await getUnprocessedObservations(db, project.id, sessionId);
+    const observations = [...currentObs, ...staleObs];
+    const currentHashes = TRACKED_FILES.map((f) => ({ path: f, hash: hashFile(join3(cwd, f)) })).filter((h) => h.hash !== null);
+    const changedFiles = await diffFileHashes(db, project.id, currentHashes);
+    if (currentHashes.length > 0)
+      await snapshotFileHashes(db, project.id, currentHashes);
+    const projectContext = changedFiles.length > 0 ? `${project.name} (files changed: ${changedFiles.join(", ")})` : project.name;
+    const { memories, summary } = await compressSession(observations, projectContext);
+    let stored = 0;
+    for (const mem of memories) {
+      const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
+      let embeddingRaw = null;
+      try {
+        embeddingRaw = await embed(textToEmbed);
+      } catch {}
+      if (embeddingRaw) {
+        const dup = await findDuplicate(db, project.id, embeddingRaw);
+        if (dup) {
+          await bumpWeight(db, dup.id);
+          continue;
+        }
+      }
+      const weight = mem.category === "correction" ? 1.5 : 1;
+      await insertMemory(db, {
+        project_id: project.id,
+        tier: mem.tier,
+        category: mem.category,
+        trust: "observed",
+        content: mem.content,
+        context: mem.context ?? null,
+        source: "hook_auto",
+        embedding: embeddingRaw,
+        weight,
+        session_id: sessionId
+      });
+      stored++;
+    }
+    if (observations.length > 0) {
+      await markProjectObservationsPromoted(db, project.id);
+    }
+    await upsertSession(db, {
+      id: sessionId,
+      project_id: project.id,
+      ended_at: Date.now(),
+      summary: summary || undefined,
+      memories_stored: stored
+    });
+    const { pruned } = await decayAndPrune(db, project.id);
+    if (pruned > 0) {
+      console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);
+    }
+  } catch (e) {
+    console.error(`[apsolut-cortex] session-end error: ${e}`);
+    process.exit(0);
+  }
+}
+main();

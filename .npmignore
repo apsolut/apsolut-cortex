@@ -1,0 +1,6 @@
+src/
+node_modules/
+bunfig.toml
+tsconfig.json
+*.zip
+.apsolut/

@@ -1,0 +1,4 @@
+[install]
+# Pre-trust lifecycle scripts for known safe packages
+# protobufjs is required by @modelcontextprotocol/sdk
+trustedDependencies = ["protobufjs"]

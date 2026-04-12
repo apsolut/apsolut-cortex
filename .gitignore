@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Per-project identity (generated on init, unique per install)
+.apsolut/project.json
+
+# Internal design docs (not needed by users)
+.apsolut/apsolut-ideas/
+
+# Dev-only notes
+HANDOFF.md
+LOCAL_SETUP.md
+PUBLISHING.md
+
+# Build artifacts & archives
+*.zip
+*.tgz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+.idea/
+.vscode/

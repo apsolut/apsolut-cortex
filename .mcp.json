@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "apsolut-cortex": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"
+      ]
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "apsolut-cortex",
+  "version": "0.4.0",
+  "description": "Persistent memory for Claude Code projects — stores corrections, decisions, and patterns across sessions",
+  "type": "module",
+  "bin": {
+    "apsolut-cortex": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun run build.ts",
+    "prepublishOnly": "bun run build",
+    "dev": "bun run src/cli.ts",
+    "dev:mcp": "bun run src/mcp/server.ts"
+  },
+  "files": [
+    "dist/",
+    "scripts/",
+    "skills/",
+    "hooks/",
+    "bin/",
+    ".claude-plugin/",
+    "README.md"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "memory",
+    "mcp",
+    "ai-agent",
+    "anthropic",
+    "cortex"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@libsql/client": "^0.17.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xenova/transformers": "~2.17.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}
