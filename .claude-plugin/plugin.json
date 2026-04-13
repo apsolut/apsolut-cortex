@@ -1,6 +1,6 @@
 {
   "name": "apsolut-cortex",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Persistent memory for Claude Code — captures corrections, decisions, and patterns across sessions automatically",
   "author": {
     "name": "apsolut"
