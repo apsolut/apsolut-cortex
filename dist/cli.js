@@ -5,6 +5,7 @@ import {
   existsSync as existsSync3,
   mkdirSync as mkdirSync3,
   readFileSync as readFileSync2,
+  rmSync,
   writeFileSync as writeFileSync2
 } from "fs";
 import { join as join2, resolve, dirname as dirname2 } from "path";
@@ -12,7 +13,7 @@ import { homedir as homedir2 } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 
 // src/registry.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync, writeFileSync } from "fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync, writeFileSync, renameSync } from "fs";
 import { dirname } from "path";
 
 // src/db.ts
@@ -20,6 +21,33 @@ import { createClient } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+// src/config.ts
+function envNum(key, fallback) {
+  const val = process.env[key];
+  if (val === undefined)
+    return fallback;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+var CORTEX_DUPLICATE_THRESHOLD = envNum("CORTEX_DUPLICATE_THRESHOLD", 0.92);
+var CORTEX_DECAY_DAYS = envNum("CORTEX_DECAY_DAYS", 7);
+var CORTEX_DECAY_OBSERVED = envNum("CORTEX_DECAY_OBSERVED", 0.95);
+var CORTEX_DECAY_VALIDATED = envNum("CORTEX_DECAY_VALIDATED", 0.98);
+var CORTEX_PRUNE_WEIGHT = envNum("CORTEX_PRUNE_WEIGHT", 0.1);
+var CORTEX_RRF_K = envNum("CORTEX_RRF_K", 60);
+var CORTEX_MMR_LAMBDA = envNum("CORTEX_MMR_LAMBDA", 0.7);
+var CORTEX_SEARCH_LIMIT_MAX = envNum("CORTEX_SEARCH_LIMIT_MAX", 10);
+var CORTEX_SEARCH_MULTIPLIER = envNum("CORTEX_SEARCH_MULTIPLIER", 2);
+var CORTEX_WEIGHT_ALPHA = envNum("CORTEX_WEIGHT_ALPHA", 0.3);
+var CORTEX_PROMOTE_WEIGHT = envNum("CORTEX_PROMOTE_WEIGHT", 1.4);
+var CORTEX_PROMOTE_USES = envNum("CORTEX_PROMOTE_USES", 3);
+var CORTEX_BUMP_BOOST = envNum("CORTEX_BUMP_BOOST", 0.1);
+var CORTEX_WEIGHT_CAP = envNum("CORTEX_WEIGHT_CAP", 3);
+var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
+var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
+
+// src/db.ts
 var CORTEX_DIR = join(homedir(), ".apsolut");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
@@ -156,7 +184,9 @@ function writeRegistry(reg) {
   const dir = dirname(REGISTRY_PATH);
   if (!existsSync2(dir))
     mkdirSync2(dir, { recursive: true });
-  writeFileSync(REGISTRY_PATH, JSON.stringify(reg, null, 2));
+  const tmp = REGISTRY_PATH + ".tmp";
+  writeFileSync(tmp, JSON.stringify(reg, null, 2));
+  renameSync(tmp, REGISTRY_PATH);
 }
 function registerProject(id, name, path) {
   const reg = readRegistry();
@@ -274,7 +304,7 @@ apsolut-cortex init
   mcp.mcpServers = servers;
   writeFileSync2(MCP_JSON, JSON.stringify(mcp, null, 2));
   console.log(`✓ Written .mcp.json`);
-  const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run ${join2(__dirname2, "cli.ts")}`;
+  const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join2(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
   const hookEntries = {
     SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
     PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use` }] }],
@@ -310,6 +340,27 @@ apsolut-cortex init
   settings.hooks = existingHooks;
   writeFileSync2(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
   console.log(added > 0 ? `✓ Registered ${added} hooks in ~/.claude/settings.json` : `✓ Hooks already registered`);
+  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const skillsSource = join2(PACKAGE_ROOT, "skills");
+  const skillsTarget = join2(homedir2(), ".claude", "skills");
+  if (!existsSync3(skillsTarget))
+    mkdirSync3(skillsTarget, { recursive: true });
+  let skillsCopied = 0;
+  for (const name of SKILL_NAMES) {
+    const src = join2(skillsSource, name, "SKILL.md");
+    const destDir = join2(skillsTarget, name);
+    const dest = join2(destDir, "SKILL.md");
+    if (!existsSync3(src))
+      continue;
+    const srcContent = readFileSync2(src, "utf-8");
+    if (existsSync3(dest) && readFileSync2(dest, "utf-8") === srcContent)
+      continue;
+    if (!existsSync3(destDir))
+      mkdirSync3(destDir, { recursive: true });
+    writeFileSync2(dest, srcContent);
+    skillsCopied++;
+  }
+  console.log(skillsCopied > 0 ? `✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})` : `✓ Skills already installed`);
   const gitignore = join2(PROJECT_ROOT, ".gitignore");
   if (existsSync3(gitignore)) {
     const content = readFileSync2(gitignore, "utf-8");
@@ -436,6 +487,22 @@ function uninstall() {
         console.log("✓ Removed hooks from ~/.claude/settings.json");
       }
     } catch {}
+  }
+  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const skillsDir = join2(homedir2(), ".claude", "skills");
+  let skillsRemoved = 0;
+  for (const name of SKILL_NAMES) {
+    const skillFile = join2(skillsDir, name, "SKILL.md");
+    if (existsSync3(skillFile)) {
+      const content = readFileSync2(skillFile, "utf-8");
+      if (content.includes("memory_")) {
+        rmSync(join2(skillsDir, name), { recursive: true, force: true });
+        skillsRemoved++;
+      }
+    }
+  }
+  if (skillsRemoved > 0) {
+    console.log(`✓ Removed ${skillsRemoved} skills from ~/.claude/skills/`);
   }
   console.log(`
 Uninstalled. DB at ~/.apsolut/memory.db kept.

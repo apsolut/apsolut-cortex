@@ -1,10 +1,13 @@
 {
   "mcpServers": {
     "apsolut-cortex": {
-      "command": "node",
+      "command": "bun",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"
-      ]
+        "D:\\sites\\git\\apsolut-cortex\\src\\mcp\\server.ts"
+      ],
+      "env": {
+        "APSOLUT_PROJECT_PATH": "D:\\sites\\git\\apsolut-cortex"
+      }
     }
   }
 }

@@ -1,7 +1,24 @@
-import { createClient, type Client, type Row } from "@libsql/client";
+import { createClient, type Client, type Row, type InStatement, type ResultSet } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import {
+  CORTEX_DUPLICATE_THRESHOLD,
+  CORTEX_BUMP_BOOST,
+  CORTEX_WEIGHT_CAP,
+  CORTEX_RRF_K,
+  CORTEX_MMR_LAMBDA,
+  CORTEX_WEIGHT_ALPHA,
+  CORTEX_PROMOTE_WEIGHT,
+  CORTEX_PROMOTE_USES,
+  CORTEX_DECAY_DAYS,
+  CORTEX_DECAY_OBSERVED,
+  CORTEX_DECAY_VALIDATED,
+  CORTEX_PRUNE_WEIGHT,
+} from "./config.js";
+
+/** Anything with an execute() method — works for both Client and Transaction. */
+export type DbConn = { execute(stmt: InStatement): Promise<ResultSet> };
 
 export const CORTEX_DIR = join(homedir(), ".apsolut");
 export const DB_PATH = join(CORTEX_DIR, "memory.db");
@@ -204,7 +221,7 @@ export interface ProjectRecord {
 // ── Project ──────────────────────────────────────────────────────────────────
 
 export async function upsertProject(
-  db: Client,
+  db: DbConn,
   project: { id: string; name: string; path?: string }
 ): Promise<void> {
   const existing = await db.execute({
@@ -227,7 +244,7 @@ export async function upsertProject(
 // ── Sessions ─────────────────────────────────────────────────────────────────
 
 export async function upsertSession(
-  db: Client,
+  db: DbConn,
   s: { id: string; project_id: string; ended_at?: number; summary?: string;
        memories_stored?: number; tool_failures?: number }
 ): Promise<void> {
@@ -255,7 +272,7 @@ export async function upsertSession(
 }
 
 export async function getRecentSummaries(
-  db: Client,
+  db: DbConn,
   projectId: string,
   limit = 3
 ): Promise<string[]> {
@@ -271,7 +288,7 @@ export async function getRecentSummaries(
 // ── Observations ─────────────────────────────────────────────────────────────
 
 export async function insertObservation(
-  db: Client,
+  db: DbConn,
   obs: { session_id: string; project_id: string; tool_name?: string;
          content: string; category?: string }
 ): Promise<void> {
@@ -286,7 +303,7 @@ export async function insertObservation(
 }
 
 export async function getSessionObservations(
-  db: Client,
+  db: DbConn,
   sessionId: string
 ): Promise<Array<{ tool_name: string | null; content: string; category: string | null }>> {
   const result = await db.execute({
@@ -301,7 +318,7 @@ export async function getSessionObservations(
 }
 
 export async function getUnprocessedObservations(
-  db: Client,
+  db: DbConn,
   projectId: string,
   excludeSessionId: string
 ): Promise<Array<{ tool_name: string | null; content: string; category: string | null; session_id: string }>> {
@@ -318,7 +335,7 @@ export async function getUnprocessedObservations(
 }
 
 export async function markObservationsPromoted(
-  db: Client,
+  db: DbConn,
   sessionId: string
 ): Promise<void> {
   await db.execute({
@@ -328,7 +345,7 @@ export async function markObservationsPromoted(
 }
 
 export async function markProjectObservationsPromoted(
-  db: Client,
+  db: DbConn,
   projectId: string
 ): Promise<void> {
   await db.execute({
@@ -340,10 +357,10 @@ export async function markProjectObservationsPromoted(
 // ── Memories ─────────────────────────────────────────────────────────────────
 
 export async function findDuplicate(
-  db: Client,
+  db: DbConn,
   projectId: string,
   embedding: Float32Array,
-  threshold = 0.92
+  threshold = CORTEX_DUPLICATE_THRESHOLD
 ): Promise<{ id: string; weight: number } | null> {
   // cosine distance = 1 - cosine similarity, so threshold becomes 1 - 0.92 = 0.08
   const maxDistance = 1 - threshold;
@@ -364,18 +381,18 @@ export async function findDuplicate(
 }
 
 export async function bumpWeight(
-  db: Client,
+  db: DbConn,
   id: string,
-  boost: number = 0.1
+  boost: number = CORTEX_BUMP_BOOST
 ): Promise<void> {
   await db.execute({
-    sql: "UPDATE memories SET weight = MIN(weight + ?, 3.0), last_used = ? WHERE id = ?",
+    sql: `UPDATE memories SET weight = MIN(weight + ?, ${CORTEX_WEIGHT_CAP}), last_used = ? WHERE id = ?`,
     args: [boost, Date.now(), id],
   });
 }
 
 export async function insertMemory(
-  db: Client,
+  db: DbConn,
   m: {
     project_id: string; tier: string; category: string; trust: string;
     content: string; context: string | null; source: string;
@@ -414,7 +431,7 @@ export async function insertMemory(
 }
 
 export async function searchBM25(
-  db: Client,
+  db: DbConn,
   projectId: string,
   query: string,
   limit: number
@@ -431,7 +448,7 @@ export async function searchBM25(
 }
 
 export async function searchVector(
-  db: Client,
+  db: DbConn,
   projectId: string,
   queryEmb: Float32Array,
   limit: number
@@ -466,7 +483,7 @@ export function mergeRRF<T extends { id: string }>(
   limit: number,
   allItems: Map<string, T>
 ): T[] {
-  const k = 60;
+  const k = CORTEX_RRF_K;
   const scores = new Map<string, number>();
   list1.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
   list2.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
@@ -481,7 +498,7 @@ export function applyMMR(
   candidates: Array<Memory & { similarity?: number }>,
   queryEmb: Float32Array | null,
   limit: number,
-  lambda = 0.7
+  lambda = CORTEX_MMR_LAMBDA
 ): Memory[] {
   if (!queryEmb || candidates.length <= limit) return candidates.slice(0, limit);
 
@@ -518,7 +535,7 @@ export function applyMMR(
 }
 
 export async function updateWeight(
-  db: Client,
+  db: DbConn,
   id: string,
   score: 0 | 1 | 2 | 3
 ): Promise<void> {
@@ -529,13 +546,13 @@ export async function updateWeight(
   if (result.rows.length === 0) return;
   const mem = result.rows[0];
 
-  const alpha = 0.3;
+  const alpha = CORTEX_WEIGHT_ALPHA;
   const oldWeight = mem.weight as number;
   const usedCount = mem.used_count as number;
   const newWeight = alpha * (score / 3) + (1 - alpha) * oldWeight;
 
   const newTrust =
-    newWeight > 1.4 || usedCount + 1 >= 3 ? "validated" : undefined;
+    newWeight > CORTEX_PROMOTE_WEIGHT || usedCount + 1 >= CORTEX_PROMOTE_USES ? "validated" : undefined;
 
   if (newTrust) {
     await db.execute({
@@ -551,29 +568,29 @@ export async function updateWeight(
 }
 
 export async function decayAndPrune(
-  db: Client,
+  db: DbConn,
   projectId: string
 ): Promise<{ decayed: number; pruned: number }> {
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
 
   const decayResult = await db.execute({
     sql: `UPDATE memories
           SET weight = weight * CASE
             WHEN trust IN ('proven', 'canonical') THEN 1.0
-            WHEN trust = 'validated' THEN 0.98
-            ELSE 0.95
+            WHEN trust = 'validated' THEN ?
+            ELSE ?
           END
           WHERE project_id = ?
             AND trust NOT IN ('canonical')
             AND (last_used IS NULL OR last_used < ?)`,
-    args: [projectId, cutoff],
+    args: [CORTEX_DECAY_VALIDATED, CORTEX_DECAY_OBSERVED, projectId, cutoff],
   });
 
   const pruneResult = await db.execute({
     sql: `DELETE FROM memories
-          WHERE project_id = ? AND weight < 0.1 AND used_count > 3
+          WHERE project_id = ? AND weight < ?
             AND trust NOT IN ('proven', 'canonical')`,
-    args: [projectId],
+    args: [projectId, CORTEX_PRUNE_WEIGHT],
   });
 
   return {
@@ -600,7 +617,7 @@ export async function snapshotFileHashes(
 }
 
 export async function diffFileHashes(
-  db: Client,
+  db: DbConn,
   projectId: string,
   currentHashes: Array<{ path: string; hash: string }>
 ): Promise<string[]> {

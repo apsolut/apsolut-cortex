@@ -17,6 +17,33 @@ import { createClient } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+// src/config.ts
+function envNum(key, fallback) {
+  const val = process.env[key];
+  if (val === undefined)
+    return fallback;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+var CORTEX_DUPLICATE_THRESHOLD = envNum("CORTEX_DUPLICATE_THRESHOLD", 0.92);
+var CORTEX_DECAY_DAYS = envNum("CORTEX_DECAY_DAYS", 7);
+var CORTEX_DECAY_OBSERVED = envNum("CORTEX_DECAY_OBSERVED", 0.95);
+var CORTEX_DECAY_VALIDATED = envNum("CORTEX_DECAY_VALIDATED", 0.98);
+var CORTEX_PRUNE_WEIGHT = envNum("CORTEX_PRUNE_WEIGHT", 0.1);
+var CORTEX_RRF_K = envNum("CORTEX_RRF_K", 60);
+var CORTEX_MMR_LAMBDA = envNum("CORTEX_MMR_LAMBDA", 0.7);
+var CORTEX_SEARCH_LIMIT_MAX = envNum("CORTEX_SEARCH_LIMIT_MAX", 10);
+var CORTEX_SEARCH_MULTIPLIER = envNum("CORTEX_SEARCH_MULTIPLIER", 2);
+var CORTEX_WEIGHT_ALPHA = envNum("CORTEX_WEIGHT_ALPHA", 0.3);
+var CORTEX_PROMOTE_WEIGHT = envNum("CORTEX_PROMOTE_WEIGHT", 1.4);
+var CORTEX_PROMOTE_USES = envNum("CORTEX_PROMOTE_USES", 3);
+var CORTEX_BUMP_BOOST = envNum("CORTEX_BUMP_BOOST", 0.1);
+var CORTEX_WEIGHT_CAP = envNum("CORTEX_WEIGHT_CAP", 3);
+var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
+var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
+
+// src/db.ts
 var CORTEX_DIR = join(homedir(), ".apsolut");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
@@ -178,7 +205,7 @@ async function upsertProject(db, project) {
     });
   }
 }
-async function findDuplicate(db, projectId, embedding, threshold = 0.92) {
+async function findDuplicate(db, projectId, embedding, threshold = CORTEX_DUPLICATE_THRESHOLD) {
   const maxDistance = 1 - threshold;
   const result = await db.execute({
     sql: `SELECT id, weight, vector_distance_cos(embedding, vector(?)) as distance
@@ -196,9 +223,9 @@ async function findDuplicate(db, projectId, embedding, threshold = 0.92) {
   }
   return null;
 }
-async function bumpWeight(db, id, boost = 0.1) {
+async function bumpWeight(db, id, boost = CORTEX_BUMP_BOOST) {
   await db.execute({
-    sql: "UPDATE memories SET weight = MIN(weight + ?, 3.0), last_used = ? WHERE id = ?",
+    sql: `UPDATE memories SET weight = MIN(weight + ?, ${CORTEX_WEIGHT_CAP}), last_used = ? WHERE id = ?`,
     args: [boost, Date.now(), id]
   });
 }
@@ -285,13 +312,13 @@ function cosineSimilarity(a, b) {
   return d === 0 ? 0 : dot / d;
 }
 function mergeRRF(list1, list2, limit, allItems) {
-  const k = 60;
+  const k = CORTEX_RRF_K;
   const scores = new Map;
   list1.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
   list2.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
   return [...scores.entries()].sort(([, a], [, b]) => b - a).slice(0, limit).map(([id]) => allItems.get(id)).filter(Boolean);
 }
-function applyMMR(candidates, queryEmb, limit, lambda = 0.7) {
+function applyMMR(candidates, queryEmb, limit, lambda = CORTEX_MMR_LAMBDA) {
   if (!queryEmb || candidates.length <= limit)
     return candidates.slice(0, limit);
   const selected = [];
@@ -332,11 +359,11 @@ async function updateWeight(db, id, score) {
   if (result.rows.length === 0)
     return;
   const mem = result.rows[0];
-  const alpha = 0.3;
+  const alpha = CORTEX_WEIGHT_ALPHA;
   const oldWeight = mem.weight;
   const usedCount = mem.used_count;
   const newWeight = alpha * (score / 3) + (1 - alpha) * oldWeight;
-  const newTrust = newWeight > 1.4 || usedCount + 1 >= 3 ? "validated" : undefined;
+  const newTrust = newWeight > CORTEX_PROMOTE_WEIGHT || usedCount + 1 >= CORTEX_PROMOTE_USES ? "validated" : undefined;
   if (newTrust) {
     await db.execute({
       sql: "UPDATE memories SET weight = ?, used_count = used_count + 1, last_used = ?, trust = CASE WHEN trust = 'observed' THEN ? ELSE trust END WHERE id = ?",
@@ -379,11 +406,43 @@ async function embed(text) {
 }
 
 // src/privacy.ts
-var PRIVATE_RE = /<private>[\s\S]*?<\/private>/gi;
 function stripPrivate(text) {
-  const stripped = text.replace(PRIVATE_RE, "").trim();
+  let result = text;
+  let start;
+  while ((start = result.toLowerCase().indexOf("<private>")) !== -1) {
+    const end = result.toLowerCase().indexOf("</private>", start);
+    if (end === -1)
+      break;
+    result = result.slice(0, start) + result.slice(end + "</private>".length);
+  }
+  const stripped = result.trim();
   return stripped.length > 0 ? stripped : null;
 }
+
+// src/config.ts
+function envNum2(key, fallback) {
+  const val = process.env[key];
+  if (val === undefined)
+    return fallback;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+var CORTEX_DUPLICATE_THRESHOLD2 = envNum2("CORTEX_DUPLICATE_THRESHOLD", 0.92);
+var CORTEX_DECAY_DAYS2 = envNum2("CORTEX_DECAY_DAYS", 7);
+var CORTEX_DECAY_OBSERVED2 = envNum2("CORTEX_DECAY_OBSERVED", 0.95);
+var CORTEX_DECAY_VALIDATED2 = envNum2("CORTEX_DECAY_VALIDATED", 0.98);
+var CORTEX_PRUNE_WEIGHT2 = envNum2("CORTEX_PRUNE_WEIGHT", 0.1);
+var CORTEX_RRF_K2 = envNum2("CORTEX_RRF_K", 60);
+var CORTEX_MMR_LAMBDA2 = envNum2("CORTEX_MMR_LAMBDA", 0.7);
+var CORTEX_SEARCH_LIMIT_MAX2 = envNum2("CORTEX_SEARCH_LIMIT_MAX", 10);
+var CORTEX_SEARCH_MULTIPLIER2 = envNum2("CORTEX_SEARCH_MULTIPLIER", 2);
+var CORTEX_WEIGHT_ALPHA2 = envNum2("CORTEX_WEIGHT_ALPHA", 0.3);
+var CORTEX_PROMOTE_WEIGHT2 = envNum2("CORTEX_PROMOTE_WEIGHT", 1.4);
+var CORTEX_PROMOTE_USES2 = envNum2("CORTEX_PROMOTE_USES", 3);
+var CORTEX_BUMP_BOOST2 = envNum2("CORTEX_BUMP_BOOST", 0.1);
+var CORTEX_WEIGHT_CAP2 = envNum2("CORTEX_WEIGHT_CAP", 3);
+var CORTEX_CORRECTION_WEIGHT2 = envNum2("CORTEX_CORRECTION_WEIGHT", 1.5);
+var CORTEX_MANUAL_WEIGHT2 = envNum2("CORTEX_MANUAL_WEIGHT", 1.2);
 
 // src/mcp/server.ts
 var PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
@@ -407,17 +466,20 @@ function requireProject() {
   return project;
 }
 async function hybridSearch(projectId, query, limit) {
-  const bm25 = await searchBM25(db, projectId, query, limit * 2);
+  const fetchCount = limit * CORTEX_SEARCH_MULTIPLIER2;
+  const bm25 = await searchBM25(db, projectId, query, fetchCount);
   let vectorResults = [];
   let queryEmb = null;
   try {
     queryEmb = await embed(query);
-    vectorResults = await searchVector(db, projectId, queryEmb, limit * 2);
-  } catch {}
+    vectorResults = await searchVector(db, projectId, queryEmb, fetchCount);
+  } catch (e) {
+    console.error(`[apsolut-cortex] search embedding failed, falling back to BM25: ${e}`);
+  }
   const allItems = new Map;
   bm25.forEach((m) => allItems.set(m.id, m));
   vectorResults.forEach((m) => allItems.set(m.id, m));
-  const merged = mergeRRF(bm25, vectorResults, limit * 2, allItems);
+  const merged = mergeRRF(bm25, vectorResults, fetchCount, allItems);
   const withSimilarity = merged.map((m) => ({
     ...m,
     similarity: vectorResults.find((v) => v.id === m.id)?.similarity ?? 0
@@ -524,10 +586,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "memory_search": {
         const p = requireProject();
         const query = String(args?.query ?? "");
-        const limit = Math.min(Number(args?.limit ?? 5), 10);
+        const limit = Math.min(Number(args?.limit ?? 5), CORTEX_SEARCH_LIMIT_MAX2);
         const tierFilter = args?.tier;
         const trustFilter = args?.trust;
-        let results = await hybridSearch(p.id, query, limit * 2);
+        let results = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER2);
         if (tierFilter)
           results = results.filter((m) => m.tier === tierFilter);
         if (trustFilter) {
@@ -583,7 +645,9 @@ Call memory_rate(id, score) after using these.`
         let embeddingRaw = null;
         try {
           embeddingRaw = await embed(textToEmbed);
-        } catch {}
+        } catch (e) {
+          console.error(`[apsolut-cortex] embedding failed for store: ${e}`);
+        }
         if (embeddingRaw) {
           const dup = await findDuplicate(db, p.id, embeddingRaw);
           if (dup) {
@@ -596,7 +660,7 @@ Call memory_rate(id, score) after using these.`
             };
           }
         }
-        const weight = category === "correction" ? 1.5 : 1.2;
+        const weight = category === "correction" ? CORTEX_CORRECTION_WEIGHT2 : CORTEX_MANUAL_WEIGHT2;
         const id = await insertMemory(db, {
           project_id: p.id,
           tier,
@@ -645,7 +709,9 @@ ${tier}/${category}: ${content}`
           let embedding = null;
           try {
             embedding = await embed(correction);
-          } catch {}
+          } catch (e) {
+            console.error(`[apsolut-cortex] embedding failed for correction: ${e}`);
+          }
           newId = await insertMemory(db, {
             project_id: p.id,
             tier: "episodic",
@@ -655,7 +721,7 @@ ${tier}/${category}: ${content}`
             context: `Replaced wrong memory ${id}`,
             source: "manual",
             embedding,
-            weight: 1.5,
+            weight: CORTEX_CORRECTION_WEIGHT2,
             session_id: null
           });
         }

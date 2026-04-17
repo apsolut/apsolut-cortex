@@ -7,6 +7,33 @@ import { createClient } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+// src/config.ts
+function envNum(key, fallback) {
+  const val = process.env[key];
+  if (val === undefined)
+    return fallback;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+var CORTEX_DUPLICATE_THRESHOLD = envNum("CORTEX_DUPLICATE_THRESHOLD", 0.92);
+var CORTEX_DECAY_DAYS = envNum("CORTEX_DECAY_DAYS", 7);
+var CORTEX_DECAY_OBSERVED = envNum("CORTEX_DECAY_OBSERVED", 0.95);
+var CORTEX_DECAY_VALIDATED = envNum("CORTEX_DECAY_VALIDATED", 0.98);
+var CORTEX_PRUNE_WEIGHT = envNum("CORTEX_PRUNE_WEIGHT", 0.1);
+var CORTEX_RRF_K = envNum("CORTEX_RRF_K", 60);
+var CORTEX_MMR_LAMBDA = envNum("CORTEX_MMR_LAMBDA", 0.7);
+var CORTEX_SEARCH_LIMIT_MAX = envNum("CORTEX_SEARCH_LIMIT_MAX", 10);
+var CORTEX_SEARCH_MULTIPLIER = envNum("CORTEX_SEARCH_MULTIPLIER", 2);
+var CORTEX_WEIGHT_ALPHA = envNum("CORTEX_WEIGHT_ALPHA", 0.3);
+var CORTEX_PROMOTE_WEIGHT = envNum("CORTEX_PROMOTE_WEIGHT", 1.4);
+var CORTEX_PROMOTE_USES = envNum("CORTEX_PROMOTE_USES", 3);
+var CORTEX_BUMP_BOOST = envNum("CORTEX_BUMP_BOOST", 0.1);
+var CORTEX_WEIGHT_CAP = envNum("CORTEX_WEIGHT_CAP", 3);
+var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
+var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
+
+// src/db.ts
 var CORTEX_DIR = join(homedir(), ".apsolut");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
@@ -180,9 +207,16 @@ async function insertObservation(db, obs) {
 }
 
 // src/privacy.ts
-var PRIVATE_RE = /<private>[\s\S]*?<\/private>/gi;
 function stripPrivate(text) {
-  const stripped = text.replace(PRIVATE_RE, "").trim();
+  let result = text;
+  let start;
+  while ((start = result.toLowerCase().indexOf("<private>")) !== -1) {
+    const end = result.toLowerCase().indexOf("</private>", start);
+    if (end === -1)
+      break;
+    result = result.slice(0, start) + result.slice(end + "</private>".length);
+  }
+  const stripped = result.trim();
   return stripped.length > 0 ? stripped : null;
 }
 

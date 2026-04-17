@@ -12,13 +12,7 @@ import { readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 import { getDb, upsertProject, upsertSession, snapshotFileHashes } from "../db.js";
-
-const TRACKED_FILES = [
-  "package.json", "tsconfig.json", "tsconfig.base.json",
-  ".env", ".env.local", "cargo.toml", "pyproject.toml",
-  "go.mod", "composer.json", "Gemfile", "vite.config.ts",
-  "next.config.js", "next.config.ts",
-];
+import { TRACKED_FILES } from "../config.js";
 
 function hashFile(path: string): string | null {
   try {

@@ -25,13 +25,7 @@ import {
 } from "../db.js";
 import { compressSession } from "../compress.js";
 import { embed } from "../embed.js";
-
-const TRACKED_FILES = [
-  "package.json", "tsconfig.json", "tsconfig.base.json",
-  ".env", ".env.local", "cargo.toml", "pyproject.toml",
-  "go.mod", "composer.json", "Gemfile", "vite.config.ts",
-  "next.config.js", "next.config.ts",
-];
+import { TRACKED_FILES, CORTEX_CORRECTION_WEIGHT } from "../config.js";
 
 function hashFile(path: string): string | null {
   try {
@@ -86,54 +80,64 @@ async function main() {
       projectContext
     );
 
-    let stored = 0;
-    for (const mem of memories) {
-      const textToEmbed = mem.context
-        ? `${mem.content} ${mem.context}`
-        : mem.content;
+    // Wrap memory storage + observation promotion + session update in a transaction
+    const tx = await db.transaction("write");
+    try {
+      let stored = 0;
+      for (const mem of memories) {
+        const textToEmbed = mem.context
+          ? `${mem.content} ${mem.context}`
+          : mem.content;
 
-      let embeddingRaw: Float32Array | null = null;
-      try {
-        embeddingRaw = await embed(textToEmbed);
-      } catch {}
-
-      // Dedup: skip if a very similar memory already exists
-      if (embeddingRaw) {
-        const dup = await findDuplicate(db, project.id, embeddingRaw);
-        if (dup) {
-          await bumpWeight(db, dup.id);
-          continue;
+        let embeddingRaw: Float32Array | null = null;
+        try {
+          embeddingRaw = await embed(textToEmbed);
+        } catch (e) {
+          console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
         }
+
+        // Dedup: skip if a very similar memory already exists
+        if (embeddingRaw) {
+          const dup = await findDuplicate(tx, project.id, embeddingRaw);
+          if (dup) {
+            await bumpWeight(tx, dup.id);
+            continue;
+          }
+        }
+
+        const weight = mem.category === "correction" ? CORTEX_CORRECTION_WEIGHT : 1.0;
+
+        await insertMemory(tx, {
+          project_id: project.id,
+          tier: mem.tier,
+          category: mem.category,
+          trust: "observed",
+          content: mem.content,
+          context: mem.context ?? null,
+          source: "hook_auto",
+          embedding: embeddingRaw,
+          weight,
+          session_id: sessionId,
+        });
+        stored++;
       }
 
-      const weight = mem.category === "correction" ? 1.5 : 1.0;
+      if (observations.length > 0) {
+        await markProjectObservationsPromoted(tx, project.id);
+      }
 
-      await insertMemory(db, {
+      await upsertSession(tx, {
+        id: sessionId,
         project_id: project.id,
-        tier: mem.tier,
-        category: mem.category,
-        trust: "observed",
-        content: mem.content,
-        context: mem.context ?? null,
-        source: "hook_auto",
-        embedding: embeddingRaw,
-        weight,
-        session_id: sessionId,
+        ended_at: Date.now(),
+        summary: summary || undefined,
+        memories_stored: stored,
       });
-      stored++;
-    }
 
-    if (observations.length > 0) {
-      await markProjectObservationsPromoted(db, project.id);
+      await tx.commit();
+    } finally {
+      tx.close();
     }
-
-    await upsertSession(db, {
-      id: sessionId,
-      project_id: project.id,
-      ended_at: Date.now(),
-      summary: summary || undefined,
-      memories_stored: stored,
-    });
 
     const { pruned } = await decayAndPrune(db, project.id);
     if (pruned > 0) {

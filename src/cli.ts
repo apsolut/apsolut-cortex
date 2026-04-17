@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "fs";
 import { join, resolve, dirname } from "path";
@@ -143,7 +144,8 @@ async function init() {
   // Hooks — use the binary name when installed via npm
   const hookCmd = IS_DIST
     ? "apsolut-cortex"
-    : `bun run ${join(__dirname, "cli.ts")}`;
+    : `bun run "${join(__dirname, "cli.ts").replace(/\\/g, "/")}"`;
+
 
   const hookEntries: Record<string, { matcher: string; hooks: { type: string; command: string }[] }[]> = {
     SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
@@ -182,6 +184,32 @@ async function init() {
   console.log(added > 0
     ? `✓ Registered ${added} hooks in ~/.claude/settings.json`
     : `✓ Hooks already registered`
+  );
+
+  // Skills — copy to ~/.claude/skills/ for standalone slash commands
+  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const skillsSource = join(PACKAGE_ROOT, "skills");
+  const skillsTarget = join(homedir(), ".claude", "skills");
+  if (!existsSync(skillsTarget)) mkdirSync(skillsTarget, { recursive: true });
+
+  let skillsCopied = 0;
+  for (const name of SKILL_NAMES) {
+    const src = join(skillsSource, name, "SKILL.md");
+    const destDir = join(skillsTarget, name);
+    const dest = join(destDir, "SKILL.md");
+
+    if (!existsSync(src)) continue;
+
+    const srcContent = readFileSync(src, "utf-8");
+    if (existsSync(dest) && readFileSync(dest, "utf-8") === srcContent) continue;
+
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+    writeFileSync(dest, srcContent);
+    skillsCopied++;
+  }
+  console.log(skillsCopied > 0
+    ? `✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})`
+    : `✓ Skills already installed`
   );
 
   // .gitignore
@@ -327,6 +355,24 @@ function uninstall() {
         console.log("✓ Removed hooks from ~/.claude/settings.json");
       }
     } catch {}
+  }
+
+  // Remove standalone skills
+  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const skillsDir = join(homedir(), ".claude", "skills");
+  let skillsRemoved = 0;
+  for (const name of SKILL_NAMES) {
+    const skillFile = join(skillsDir, name, "SKILL.md");
+    if (existsSync(skillFile)) {
+      const content = readFileSync(skillFile, "utf-8");
+      if (content.includes("memory_")) {
+        rmSync(join(skillsDir, name), { recursive: true, force: true });
+        skillsRemoved++;
+      }
+    }
+  }
+  if (skillsRemoved > 0) {
+    console.log(`✓ Removed ${skillsRemoved} skills from ~/.claude/skills/`);
   }
 
   console.log("\nUninstalled. DB at ~/.apsolut/memory.db kept.\n");

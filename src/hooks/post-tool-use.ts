@@ -53,13 +53,20 @@ async function main() {
     if (result?.worth_storing) {
       const content = stripPrivate(result.summary);
       if (content) {
-        await insertObservation(db, {
-          session_id: sessionId,
-          project_id: project.id,
-          tool_name: data.tool_name,
-          content,
-          category: result.category,
+        // Skip duplicate observations in the same session
+        const existing = await db.execute({
+          sql: "SELECT 1 FROM observations WHERE session_id = ? AND content = ? LIMIT 1",
+          args: [sessionId, content],
         });
+        if (existing.rows.length === 0) {
+          await insertObservation(db, {
+            session_id: sessionId,
+            project_id: project.id,
+            tool_name: data.tool_name,
+            content,
+            category: result.category,
+          });
+        }
       }
 
       if (result.category === "correction") {

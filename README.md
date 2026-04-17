@@ -105,3 +105,30 @@ for session compression.
 
 Starts at observed. Promoted automatically as memories prove useful.
 Canonical memories never decay.
+
+---
+
+## Configuration
+
+All thresholds are tunable via environment variables. Defaults work well out of the box.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORTEX_DUPLICATE_THRESHOLD` | `0.92` | Cosine similarity threshold for dedup (0–1) |
+| `CORTEX_DECAY_DAYS` | `7` | Days before unused memories start decaying |
+| `CORTEX_DECAY_OBSERVED` | `0.95` | Weekly decay multiplier for observed-trust memories |
+| `CORTEX_DECAY_VALIDATED` | `0.98` | Weekly decay multiplier for validated-trust memories |
+| `CORTEX_PRUNE_WEIGHT` | `0.1` | Weight below which memories are pruned |
+| `CORTEX_RRF_K` | `60` | RRF fusion constant |
+| `CORTEX_MMR_LAMBDA` | `0.7` | MMR relevance vs diversity (0=diverse, 1=relevant) |
+| `CORTEX_WEIGHT_ALPHA` | `0.3` | EMA alpha for weight updates |
+| `CORTEX_PROMOTE_WEIGHT` | `1.4` | Weight threshold for trust promotion |
+| `CORTEX_PROMOTE_USES` | `3` | Use count threshold for trust promotion |
+| `CORTEX_BUMP_BOOST` | `0.1` | Weight bump on duplicate detection |
+| `CORTEX_WEIGHT_CAP` | `3.0` | Maximum weight a memory can reach |
+| `CORTEX_CORRECTION_WEIGHT` | `1.5` | Initial weight for correction memories |
+| `CORTEX_MANUAL_WEIGHT` | `1.2` | Initial weight for manually stored memories |
+| `CORTEX_SEARCH_LIMIT_MAX` | `10` | Maximum search results returned |
+| `CORTEX_SEARCH_MULTIPLIER` | `2` | Overfetch multiplier for search ranking |
+| `CORTEX_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model for compression |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |

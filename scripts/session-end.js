@@ -8,6 +8,77 @@ import { createClient } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+// src/config.ts
+function envNum(key, fallback) {
+  const val = process.env[key];
+  if (val === undefined)
+    return fallback;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+var CORTEX_DUPLICATE_THRESHOLD = envNum("CORTEX_DUPLICATE_THRESHOLD", 0.92);
+var CORTEX_DECAY_DAYS = envNum("CORTEX_DECAY_DAYS", 7);
+var CORTEX_DECAY_OBSERVED = envNum("CORTEX_DECAY_OBSERVED", 0.95);
+var CORTEX_DECAY_VALIDATED = envNum("CORTEX_DECAY_VALIDATED", 0.98);
+var CORTEX_PRUNE_WEIGHT = envNum("CORTEX_PRUNE_WEIGHT", 0.1);
+var CORTEX_RRF_K = envNum("CORTEX_RRF_K", 60);
+var CORTEX_MMR_LAMBDA = envNum("CORTEX_MMR_LAMBDA", 0.7);
+var CORTEX_SEARCH_LIMIT_MAX = envNum("CORTEX_SEARCH_LIMIT_MAX", 10);
+var CORTEX_SEARCH_MULTIPLIER = envNum("CORTEX_SEARCH_MULTIPLIER", 2);
+var CORTEX_WEIGHT_ALPHA = envNum("CORTEX_WEIGHT_ALPHA", 0.3);
+var CORTEX_PROMOTE_WEIGHT = envNum("CORTEX_PROMOTE_WEIGHT", 1.4);
+var CORTEX_PROMOTE_USES = envNum("CORTEX_PROMOTE_USES", 3);
+var CORTEX_BUMP_BOOST = envNum("CORTEX_BUMP_BOOST", 0.1);
+var CORTEX_WEIGHT_CAP = envNum("CORTEX_WEIGHT_CAP", 3);
+var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
+var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
+var TRACKED_FILES = [
+  "package.json",
+  "tsconfig.json",
+  "tsconfig.base.json",
+  ".env",
+  ".env.local",
+  "cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  "composer.json",
+  "Gemfile",
+  "bun.lock",
+  "bunfig.toml",
+  "deno.json",
+  "deno.jsonc",
+  "vite.config.ts",
+  "vite.config.js",
+  "vite.config.mjs",
+  "webpack.config.js",
+  "webpack.config.ts",
+  "next.config.js",
+  "next.config.ts",
+  "next.config.mjs",
+  ".eslintrc.json",
+  ".eslintrc.js",
+  "eslint.config.js",
+  "eslint.config.mjs",
+  ".prettierrc",
+  ".prettierrc.json",
+  "biome.json",
+  "biome.jsonc",
+  "tailwind.config.js",
+  "tailwind.config.ts",
+  "drizzle.config.ts",
+  "drizzle.config.js",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "Dockerfile",
+  "turbo.json",
+  "nx.json",
+  "lerna.json",
+  "Makefile",
+  "justfile"
+];
+
+// src/db.ts
 var CORTEX_DIR = join(homedir(), ".apsolut");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
@@ -196,7 +267,7 @@ async function markProjectObservationsPromoted(db, projectId) {
     args: [projectId]
   });
 }
-async function findDuplicate(db, projectId, embedding, threshold = 0.92) {
+async function findDuplicate(db, projectId, embedding, threshold = CORTEX_DUPLICATE_THRESHOLD) {
   const maxDistance = 1 - threshold;
   const result = await db.execute({
     sql: `SELECT id, weight, vector_distance_cos(embedding, vector(?)) as distance
@@ -214,9 +285,9 @@ async function findDuplicate(db, projectId, embedding, threshold = 0.92) {
   }
   return null;
 }
-async function bumpWeight(db, id, boost = 0.1) {
+async function bumpWeight(db, id, boost = CORTEX_BUMP_BOOST) {
   await db.execute({
-    sql: "UPDATE memories SET weight = MIN(weight + ?, 3.0), last_used = ? WHERE id = ?",
+    sql: `UPDATE memories SET weight = MIN(weight + ?, ${CORTEX_WEIGHT_CAP}), last_used = ? WHERE id = ?`,
     args: [boost, Date.now(), id]
   });
 }
@@ -269,24 +340,24 @@ async function insertMemory(db, m) {
   return id;
 }
 async function decayAndPrune(db, projectId) {
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
   const decayResult = await db.execute({
     sql: `UPDATE memories
           SET weight = weight * CASE
             WHEN trust IN ('proven', 'canonical') THEN 1.0
-            WHEN trust = 'validated' THEN 0.98
-            ELSE 0.95
+            WHEN trust = 'validated' THEN ?
+            ELSE ?
           END
           WHERE project_id = ?
             AND trust NOT IN ('canonical')
             AND (last_used IS NULL OR last_used < ?)`,
-    args: [projectId, cutoff]
+    args: [CORTEX_DECAY_VALIDATED, CORTEX_DECAY_OBSERVED, projectId, cutoff]
   });
   const pruneResult = await db.execute({
     sql: `DELETE FROM memories
-          WHERE project_id = ? AND weight < 0.1 AND used_count > 3
+          WHERE project_id = ? AND weight < ?
             AND trust NOT IN ('proven', 'canonical')`,
-    args: [projectId]
+    args: [projectId, CORTEX_PRUNE_WEIGHT]
   });
   return {
     decayed: decayResult.rowsAffected,
@@ -317,7 +388,7 @@ async function diffFileHashes(db, projectId, currentHashes) {
 
 // src/compress.ts
 import Anthropic from "@anthropic-ai/sdk";
-import { existsSync as existsSync2, readFileSync, writeFileSync } from "fs";
+import { existsSync as existsSync2, readFileSync, writeFileSync, renameSync } from "fs";
 import { join as join2 } from "path";
 import { homedir as homedir2 } from "os";
 var BREAKER_PATH = join2(homedir2(), ".apsolut", "compression-state.json");
@@ -332,7 +403,9 @@ function readBreaker() {
 }
 function writeBreaker(state) {
   try {
-    writeFileSync(BREAKER_PATH, JSON.stringify(state));
+    const tmp = BREAKER_PATH + ".tmp";
+    writeFileSync(tmp, JSON.stringify(state));
+    renameSync(tmp, BREAKER_PATH);
   } catch {}
 }
 function isBreakerOpen() {
@@ -510,21 +583,6 @@ async function embed(text) {
 }
 
 // src/hooks/session-end.ts
-var TRACKED_FILES = [
-  "package.json",
-  "tsconfig.json",
-  "tsconfig.base.json",
-  ".env",
-  ".env.local",
-  "cargo.toml",
-  "pyproject.toml",
-  "go.mod",
-  "composer.json",
-  "Gemfile",
-  "vite.config.ts",
-  "next.config.js",
-  "next.config.ts"
-];
 function hashFile(path) {
   try {
     if (!existsSync3(path))
@@ -571,45 +629,53 @@ async function main() {
       await snapshotFileHashes(db, project.id, currentHashes);
     const projectContext = changedFiles.length > 0 ? `${project.name} (files changed: ${changedFiles.join(", ")})` : project.name;
     const { memories, summary } = await compressSession(observations, projectContext);
-    let stored = 0;
-    for (const mem of memories) {
-      const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
-      let embeddingRaw = null;
-      try {
-        embeddingRaw = await embed(textToEmbed);
-      } catch {}
-      if (embeddingRaw) {
-        const dup = await findDuplicate(db, project.id, embeddingRaw);
-        if (dup) {
-          await bumpWeight(db, dup.id);
-          continue;
+    const tx = await db.transaction("write");
+    try {
+      let stored = 0;
+      for (const mem of memories) {
+        const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
+        let embeddingRaw = null;
+        try {
+          embeddingRaw = await embed(textToEmbed);
+        } catch (e) {
+          console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
         }
+        if (embeddingRaw) {
+          const dup = await findDuplicate(tx, project.id, embeddingRaw);
+          if (dup) {
+            await bumpWeight(tx, dup.id);
+            continue;
+          }
+        }
+        const weight = mem.category === "correction" ? CORTEX_CORRECTION_WEIGHT : 1;
+        await insertMemory(tx, {
+          project_id: project.id,
+          tier: mem.tier,
+          category: mem.category,
+          trust: "observed",
+          content: mem.content,
+          context: mem.context ?? null,
+          source: "hook_auto",
+          embedding: embeddingRaw,
+          weight,
+          session_id: sessionId
+        });
+        stored++;
       }
-      const weight = mem.category === "correction" ? 1.5 : 1;
-      await insertMemory(db, {
+      if (observations.length > 0) {
+        await markProjectObservationsPromoted(tx, project.id);
+      }
+      await upsertSession(tx, {
+        id: sessionId,
         project_id: project.id,
-        tier: mem.tier,
-        category: mem.category,
-        trust: "observed",
-        content: mem.content,
-        context: mem.context ?? null,
-        source: "hook_auto",
-        embedding: embeddingRaw,
-        weight,
-        session_id: sessionId
+        ended_at: Date.now(),
+        summary: summary || undefined,
+        memories_stored: stored
       });
-      stored++;
+      await tx.commit();
+    } finally {
+      tx.close();
     }
-    if (observations.length > 0) {
-      await markProjectObservationsPromoted(db, project.id);
-    }
-    await upsertSession(db, {
-      id: sessionId,
-      project_id: project.id,
-      ended_at: Date.now(),
-      summary: summary || undefined,
-      memories_stored: stored
-    });
     const { pruned } = await decayAndPrune(db, project.id);
     if (pruned > 0) {
       console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);

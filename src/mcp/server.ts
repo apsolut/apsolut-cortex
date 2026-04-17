@@ -36,6 +36,12 @@ import {
 } from "../db.js";
 import { embed } from "../embed.js";
 import { stripPrivate } from "../privacy.js";
+import {
+  CORTEX_SEARCH_LIMIT_MAX,
+  CORTEX_SEARCH_MULTIPLIER,
+  CORTEX_CORRECTION_WEIGHT,
+  CORTEX_MANUAL_WEIGHT,
+} from "../config.js";
 
 // Resolve project from env or cwd
 const PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
@@ -73,15 +79,16 @@ async function hybridSearch(
   query: string,
   limit: number
 ): Promise<Memory[]> {
-  const bm25 = await searchBM25(db, projectId, query, limit * 2);
+  const fetchCount = limit * CORTEX_SEARCH_MULTIPLIER;
+  const bm25 = await searchBM25(db, projectId, query, fetchCount);
 
   let vectorResults: Array<Memory & { similarity: number }> = [];
   let queryEmb: Float32Array | null = null;
   try {
     queryEmb = await embed(query);
-    vectorResults = await searchVector(db, projectId, queryEmb, limit * 2);
-  } catch {
-    // embedding failed — BM25 only
+    vectorResults = await searchVector(db, projectId, queryEmb, fetchCount);
+  } catch (e) {
+    console.error(`[apsolut-cortex] search embedding failed, falling back to BM25: ${e}`);
   }
 
   // Build combined map
@@ -90,7 +97,7 @@ async function hybridSearch(
   vectorResults.forEach((m) => allItems.set(m.id, m));
 
   // Merge with RRF
-  const merged = mergeRRF(bm25, vectorResults, limit * 2, allItems);
+  const merged = mergeRRF(bm25, vectorResults, fetchCount, allItems);
 
   // Apply MMR for diversity
   const withSimilarity = merged.map((m) => ({
@@ -209,11 +216,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "memory_search": {
         const p = requireProject();
         const query = String(args?.query ?? "");
-        const limit = Math.min(Number(args?.limit ?? 5), 10);
+        const limit = Math.min(Number(args?.limit ?? 5), CORTEX_SEARCH_LIMIT_MAX);
         const tierFilter = args?.tier as MemoryTier | undefined;
         const trustFilter = args?.trust as string | undefined;
 
-        let results = await hybridSearch(p.id, query, limit * 2);
+        let results = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER);
 
         if (tierFilter) results = results.filter((m) => m.tier === tierFilter);
         if (trustFilter) {
@@ -275,7 +282,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         let embeddingRaw: Float32Array | null = null;
         try {
           embeddingRaw = await embed(textToEmbed);
-        } catch {}
+        } catch (e) {
+          console.error(`[apsolut-cortex] embedding failed for store: ${e}`);
+        }
 
         // Dedup: if a very similar memory exists, bump its weight instead
         if (embeddingRaw) {
@@ -291,7 +300,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           }
         }
 
-        const weight = category === "correction" ? 1.5 : 1.2;
+        const weight = category === "correction" ? CORTEX_CORRECTION_WEIGHT : CORTEX_MANUAL_WEIGHT;
 
         const id = await insertMemory(db, {
           project_id: p.id,
@@ -349,7 +358,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           let embedding: Float32Array | null = null;
           try {
             embedding = await embed(correction);
-          } catch {}
+          } catch (e) {
+            console.error(`[apsolut-cortex] embedding failed for correction: ${e}`);
+          }
 
           newId = await insertMemory(db, {
             project_id: p.id,
@@ -360,7 +371,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             context: `Replaced wrong memory ${id}`,
             source: "manual",
             embedding,
-            weight: 1.5,
+            weight: CORTEX_CORRECTION_WEIGHT,
             session_id: null,
           });
         }

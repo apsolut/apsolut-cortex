@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -17,7 +17,11 @@ function readBreaker(): BreakerState {
 }
 
 function writeBreaker(state: BreakerState): void {
-  try { writeFileSync(BREAKER_PATH, JSON.stringify(state)); } catch {}
+  try {
+    const tmp = BREAKER_PATH + ".tmp";
+    writeFileSync(tmp, JSON.stringify(state));
+    renameSync(tmp, BREAKER_PATH);
+  } catch {}
 }
 
 function isBreakerOpen(): boolean {

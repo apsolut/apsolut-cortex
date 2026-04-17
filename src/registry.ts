@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { dirname } from "path";
 import { REGISTRY_PATH } from "./db.js";
 
@@ -24,7 +24,9 @@ export function readRegistry(): Registry {
 export function writeRegistry(reg: Registry): void {
   const dir = dirname(REGISTRY_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(REGISTRY_PATH, JSON.stringify(reg, null, 2));
+  const tmp = REGISTRY_PATH + ".tmp";
+  writeFileSync(tmp, JSON.stringify(reg, null, 2));
+  renameSync(tmp, REGISTRY_PATH);
 }
 
 export function registerProject(
