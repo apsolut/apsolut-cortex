@@ -118,7 +118,7 @@ async function compressWithOllama(
   project: string
 ): Promise<CompressionResult> {
   const OLLAMA_URL = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-  const MODEL = process.env.CORTEX_OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  const MODEL = process.env.APSOLUT_CORTEX_OLLAMA_MODEL ?? "qwen2.5-coder:7b";
 
   const obsText = observations
     .map((o, i) =>
@@ -199,7 +199,7 @@ export async function compressSession(
       "║  Option 1: Set ANTHROPIC_API_KEY in your environment         ║",
       "║  Option 2: Run Ollama locally (ollama serve)                 ║",
       "║            Default model: qwen2.5-coder:7b                  ║",
-      "║            Custom model:  CORTEX_OLLAMA_MODEL=<model>        ║",
+      "║  Custom model: APSOLUT_CORTEX_OLLAMA_MODEL=<model>           ║",
       "║                                                              ║",
       "║  Observations were saved. They will be compressed next       ║",
       "║  session when a compression provider is available.           ║",
