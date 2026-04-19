@@ -44,7 +44,7 @@ Restart Claude Code. Done.
 ### Dev setup (contributors)
 
 ```bash
-git clone https://github.com/apsolut-repo/apsolut-cortex.git
+git clone https://github.com/apsolut/apsolut-cortex.git
 cd apsolut-cortex
 bun install && bun run build
 npm link
