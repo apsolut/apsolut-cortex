@@ -129,7 +129,7 @@ async function main() {
       out.push(ln("What you can say to Claude:"));
       out.push(em());
       out.push(ln('  /apsolut-recall    Search past memories'));
-      out.push(ln('  "store: always..." Save something explicitly'));
+      out.push(ln('  /apsolut-store     Save something explicitly'));
       out.push(em());
       out.push(sep());
       out.push(ln("MCP tools available to Claude:"));
