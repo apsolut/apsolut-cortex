@@ -146,25 +146,34 @@ Canonical memories never decay.
 
 ## Configuration
 
-All thresholds are tunable via environment variables. Defaults work well out of the box.
+All env vars use the `APSOLUT_CORTEX_` prefix. Defaults work well out of the box.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` | `0.92` | Cosine similarity threshold for dedup (0–1) |
-| `APSOLUT_CORTEX_DECAY_DAYS` | `7` | Days before unused memories start decaying |
-| `APSOLUT_CORTEX_DECAY_OBSERVED` | `0.95` | Weekly decay multiplier for observed-trust memories |
-| `APSOLUT_CORTEX_DECAY_VALIDATED` | `0.98` | Weekly decay multiplier for validated-trust memories |
-| `APSOLUT_CORTEX_PRUNE_WEIGHT` | `0.1` | Weight below which memories are pruned |
-| `APSOLUT_CORTEX_RRF_K` | `60` | RRF fusion constant |
-| `APSOLUT_CORTEX_MMR_LAMBDA` | `0.7` | MMR relevance vs diversity (0=diverse, 1=relevant) |
-| `APSOLUT_CORTEX_WEIGHT_ALPHA` | `0.3` | EMA alpha for weight updates |
-| `APSOLUT_CORTEX_PROMOTE_WEIGHT` | `1.4` | Weight threshold for trust promotion |
-| `APSOLUT_CORTEX_PROMOTE_USES` | `3` | Use count threshold for trust promotion |
-| `APSOLUT_CORTEX_BUMP_BOOST` | `0.1` | Weight bump on duplicate detection |
-| `APSOLUT_CORTEX_WEIGHT_CAP` | `3.0` | Maximum weight a memory can reach |
-| `APSOLUT_CORTEX_CORRECTION_WEIGHT` | `1.5` | Initial weight for correction memories |
-| `APSOLUT_CORTEX_MANUAL_WEIGHT` | `1.2` | Initial weight for manually stored memories |
-| `APSOLUT_CORTEX_SEARCH_LIMIT_MAX` | `10` | Maximum search results returned |
-| `APSOLUT_CORTEX_SEARCH_MULTIPLIER` | `2` | Overfetch multiplier for search ranking |
-| `APSOLUT_CORTEX_OLLAMA_MODEL` | `qwen2.5-coder:7b` | Ollama model for compression |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+**Duplicate detection**
+- `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` — `0.92` — cosine similarity for dedup
+
+**Memory decay**
+- `APSOLUT_CORTEX_DECAY_DAYS` — `7` — days before unused memories decay
+- `APSOLUT_CORTEX_DECAY_OBSERVED` — `0.95` — weekly decay for observed-trust
+- `APSOLUT_CORTEX_DECAY_VALIDATED` — `0.98` — weekly decay for validated-trust
+- `APSOLUT_CORTEX_PRUNE_WEIGHT` — `0.1` — weight below which memories are pruned
+
+**Search & ranking**
+- `APSOLUT_CORTEX_RRF_K` — `60` — RRF fusion constant
+- `APSOLUT_CORTEX_MMR_LAMBDA` — `0.7` — relevance vs diversity (0–1)
+- `APSOLUT_CORTEX_SEARCH_LIMIT_MAX` — `10` — max results returned
+- `APSOLUT_CORTEX_SEARCH_MULTIPLIER` — `2` — overfetch multiplier
+
+**Weight updates**
+- `APSOLUT_CORTEX_WEIGHT_ALPHA` — `0.3` — EMA alpha for weight updates
+- `APSOLUT_CORTEX_PROMOTE_WEIGHT` — `1.4` — weight threshold for promotion
+- `APSOLUT_CORTEX_PROMOTE_USES` — `3` — use count for promotion
+- `APSOLUT_CORTEX_BUMP_BOOST` — `0.1` — weight bump on duplicate
+- `APSOLUT_CORTEX_WEIGHT_CAP` — `3.0` — max weight
+
+**Memory creation**
+- `APSOLUT_CORTEX_CORRECTION_WEIGHT` — `1.5` — initial weight for corrections
+- `APSOLUT_CORTEX_MANUAL_WEIGHT` — `1.2` — initial weight for manual stores
+
+**Compression**
+- `APSOLUT_CORTEX_OLLAMA_MODEL` — `qwen2.5-coder:7b` — Ollama model
+- `OLLAMA_HOST` — `http://localhost:11434` — Ollama server URL
