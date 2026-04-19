@@ -340,11 +340,21 @@ async function init() {
   settings.hooks = existingHooks;
   writeFileSync2(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
   console.log(added > 0 ? `[apsolut-cortex] ✓ Registered ${added} hooks in ~/.claude/settings.json` : `[apsolut-cortex] ✓ Hooks already registered`);
-  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget"];
   const skillsSource = join2(PACKAGE_ROOT, "skills");
   const skillsTarget = join2(homedir2(), ".claude", "skills");
   if (!existsSync3(skillsTarget))
     mkdirSync3(skillsTarget, { recursive: true });
+  const OLD_SKILL_NAMES = ["remember", "store", "status", "forget"];
+  for (const old of OLD_SKILL_NAMES) {
+    const oldSkill = join2(skillsTarget, old, "SKILL.md");
+    if (existsSync3(oldSkill)) {
+      const content = readFileSync2(oldSkill, "utf-8");
+      if (content.includes("memory_")) {
+        rmSync(join2(skillsTarget, old), { recursive: true, force: true });
+      }
+    }
+  }
   let skillsCopied = 0;
   for (const name of SKILL_NAMES) {
     const src = join2(skillsSource, name, "SKILL.md");
@@ -398,7 +408,7 @@ async function init() {
 
   ${d("──────────────────────────────────────────────────────────")}
 
-  Restart Claude Code, then say ${y('"remember <topic>"')} to search.
+  Restart Claude Code, then say ${y('"/apsolut-recall <topic>"')} to search.
   compression: ANTHROPIC_API_KEY → ollama fallback → loud error
 
 `;
@@ -493,7 +503,7 @@ function uninstall() {
       }
     } catch {}
   }
-  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget", "remember", "store", "status", "forget"];
   const skillsDir = join2(homedir2(), ".claude", "skills");
   let skillsRemoved = 0;
   for (const name of SKILL_NAMES) {

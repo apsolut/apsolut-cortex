@@ -1,5 +1,5 @@
 ---
-name: store
+name: apsolut-store
 description: Explicitly save a memory to persistent storage. Use when the user says "store", "save this", "remember that", or wants to persist a decision, pattern, or important fact.
 argument-hint: [content to store]
 disable-model-invocation: true

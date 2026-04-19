@@ -1,5 +1,5 @@
 ---
-name: status
+name: apsolut-status
 description: Show memory statistics for the current project — memory count, session count, categories, and recent session summaries.
 disable-model-invocation: true
 ---

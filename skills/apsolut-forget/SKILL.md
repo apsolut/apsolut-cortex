@@ -1,5 +1,5 @@
 ---
-name: forget
+name: apsolut-forget
 description: Delete a wrong or outdated memory. Use when the user says "forget", "that's wrong", "delete that memory", or wants to correct stored information.
 argument-hint: [topic or memory ID]
 disable-model-invocation: true

@@ -187,10 +187,22 @@ async function init() {
   );
 
   // Skills — copy to ~/.claude/skills/ for standalone slash commands
-  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget"];
   const skillsSource = join(PACKAGE_ROOT, "skills");
   const skillsTarget = join(homedir(), ".claude", "skills");
   if (!existsSync(skillsTarget)) mkdirSync(skillsTarget, { recursive: true });
+
+  // Clean up old generic skill names that collide with Claude builtins
+  const OLD_SKILL_NAMES = ["remember", "store", "status", "forget"];
+  for (const old of OLD_SKILL_NAMES) {
+    const oldSkill = join(skillsTarget, old, "SKILL.md");
+    if (existsSync(oldSkill)) {
+      const content = readFileSync(oldSkill, "utf-8");
+      if (content.includes("memory_")) {
+        rmSync(join(skillsTarget, old), { recursive: true, force: true });
+      }
+    }
+  }
 
   let skillsCopied = 0;
   for (const name of SKILL_NAMES) {
@@ -250,7 +262,7 @@ async function init() {
 
   ${d("──────────────────────────────────────────────────────────")}
 
-  Restart Claude Code, then say ${y('"remember <topic>"')} to search.
+  Restart Claude Code, then say ${y('"/apsolut-recall <topic>"')} to search.
   compression: ANTHROPIC_API_KEY → ollama fallback → loud error
 
 `;
@@ -364,8 +376,8 @@ function uninstall() {
     } catch {}
   }
 
-  // Remove standalone skills
-  const SKILL_NAMES = ["remember", "store", "status", "forget"];
+  // Remove standalone skills (both old and new names)
+  const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget", "remember", "store", "status", "forget"];
   const skillsDir = join(homedir(), ".claude", "skills");
   let skillsRemoved = 0;
   for (const name of SKILL_NAMES) {

@@ -72,9 +72,11 @@ Everything is automatic. Hooks fire on every Claude Code session:
 - Session summary stored for continuity
 - Stale memories decay, low-value ones pruned over time
 
-**On demand:**
-- Say `"remember <topic>"` to search memory
-- Say `"store this"` to save something explicitly
+**On demand (slash commands):**
+- `/apsolut-recall <topic>` — search memory
+- `/apsolut-store <content>` — save something explicitly
+- `/apsolut-status` — show memory stats
+- `/apsolut-forget <topic>` — delete a wrong memory
 
 ---
 
@@ -82,7 +84,7 @@ Everything is automatic. Hooks fire on every Claude Code session:
 
 | Tool | When |
 |------|------|
-| `memory_search(query)` | User says "remember X" or Claude is uncertain |
+| `memory_search(query)` | `/apsolut-recall` or Claude is uncertain |
 | `memory_store(content, category, tier)` | After a decision or discovery |
 | `memory_rate(id, score)` | After using a retrieved memory (0–3) |
 | `memory_contradict(id, correction?)` | When a memory is wrong |

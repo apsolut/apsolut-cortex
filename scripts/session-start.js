@@ -376,7 +376,7 @@ async function main() {
       out.push(sep());
       out.push(ln("What you can say to Claude:"));
       out.push(em());
-      out.push(ln('  "remember auth"    Search past memories'));
+      out.push(ln("  /apsolut-recall    Search past memories"));
       out.push(ln('  "store: always..." Save something explicitly'));
       out.push(em());
       out.push(sep());
@@ -437,7 +437,7 @@ async function main() {
         out.push(sep());
       }
       out.push(ln(`${memCount} memories | ${sessionCount} sessions`));
-      out.push(ln(`Say "remember <topic>" to search memory`));
+      out.push(ln(`Say "/apsolut-recall <topic>" to search memory`));
       out.push(bot());
     }
     process.stdout.write(out.join(`
