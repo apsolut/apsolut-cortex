@@ -222,28 +222,35 @@ async function init() {
     }
   }
 
+  // ANSI colors — fallback: if NO_COLOR or TERM=dumb, disable
+  const useColor = !process.env.NO_COLOR && process.env.TERM !== "dumb";
+  const v = (s: string) => useColor ? `\x1b[95m${s}\x1b[0m` : s;  // bright magenta
+  const y = (s: string) => useColor ? `\x1b[33m${s}\x1b[0m` : s;  // yellow
+  const d = (s: string) => useColor ? `\x1b[2m${s}\x1b[0m` : s;   // dim
+  const g = (s: string) => useColor ? `\x1b[32m${s}\x1b[0m` : s;  // green (checkmarks)
+
   const BANNER = `
-  ┌─────────────────────────────────────────────────────────┐
-  │                                                         │
-  │   █████╗ ██████╗ ███████╗ ██████╗ ██╗     ██╗   ██╗████████╗ │
-  │  ██╔══██╗██╔══██╗██╔════╝██╔═══██╗██║     ██║   ██║╚══██╔══╝ │
-  │  ███████║██████╔╝███████╗██║   ██║██║     ██║   ██║   ██║    │
-  │  ██╔══██║██╔═══╝ ╚════██║██║   ██║██║     ██║   ██║   ██║    │
-  │  ██║  ██║██║     ███████║╚██████╔╝███████╗╚██████╔╝   ██║    │
-  │  ╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚══════╝ ╚═════╝    ╚═╝    │
-  │                                                         │
-  │            c o r t e x  ·  v ${PKG_VERSION}                 │
-  │                                                         │
-  └─────────────────────────────────────────────────────────┘
+  ${d("┌─────────────────────────────────────────────────────────┐")}
+  ${d("│")}                                                         ${d("│")}
+  ${d("│")}   ${v("█████╗ ██████╗ ███████╗ ██████╗ ██╗     ██╗   ██╗████████╗")} ${d("│")}
+  ${d("│")}  ${v("██╔══██╗██╔══██╗██╔════╝██╔═══██╗██║     ██║   ██║╚══██╔══╝")} ${d("│")}
+  ${d("│")}  ${v("███████║██████╔╝███████╗██║   ██║██║     ██║   ██║   ██║")}    ${d("│")}
+  ${d("│")}  ${v("██╔══██║██╔═══╝ ╚════██║██║   ██║██║     ██║   ██║   ██║")}    ${d("│")}
+  ${d("│")}  ${v("██║  ██║██║     ███████║╚██████╔╝███████╗╚██████╔╝   ██║")}    ${d("│")}
+  ${d("│")}  ${v("╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚══════╝ ╚═════╝    ╚═╝")}    ${d("│")}
+  ${d("│")}                                                         ${d("│")}
+  ${d("│")}            ${y("c o r t e x")}  ${d("·")}  ${y(`v ${PKG_VERSION}`)}                 ${d("│")}
+  ${d("│")}                                                         ${d("│")}
+  ${d("└─────────────────────────────────────────────────────────┘")}
 
-  ✓  project    ${projectName}
-  ✓  id         ${projectId.slice(0, 18)}...
-  ✓  memory     ~/.apsolut/memory.db
-  ✓  models     ~/.apsolut/models/
+  ${g("✓")}  project    ${projectName}
+  ${g("✓")}  id         ${projectId.slice(0, 18)}...
+  ${g("✓")}  memory     ~/.apsolut/memory.db
+  ${g("✓")}  models     ~/.apsolut/models/
 
-  ──────────────────────────────────────────────────────────
+  ${d("──────────────────────────────────────────────────────────")}
 
-  Restart Claude Code, then say "remember <topic>" to search.
+  Restart Claude Code, then say ${y('"remember <topic>"')} to search.
   compression: ANTHROPIC_API_KEY → ollama fallback → loud error
 
 `;
