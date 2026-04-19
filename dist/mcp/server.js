@@ -378,7 +378,7 @@ async function updateWeight(db, id, score) {
 }
 
 // src/embed.ts
-import { pipeline, env } from "@xenova/transformers";
+import { pipeline, env } from "@huggingface/transformers";
 
 // src/db.ts
 import { createClient as createClient2 } from "@libsql/client";

@@ -566,7 +566,7 @@ async function compressSession(observations, project) {
 }
 
 // src/embed.ts
-import { pipeline, env } from "@xenova/transformers";
+import { pipeline, env } from "@huggingface/transformers";
 env.cacheDir = MODELS_DIR;
 env.allowRemoteModels = true;
 var _embedder = null;

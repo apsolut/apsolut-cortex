@@ -1,4 +1,4 @@
-import { pipeline, env } from "@xenova/transformers";
+import { pipeline, env } from "@huggingface/transformers";
 import { MODELS_DIR } from "./db.js";
 
 env.cacheDir = MODELS_DIR;

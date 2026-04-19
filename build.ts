@@ -12,7 +12,7 @@ mkdirSync("scripts", { recursive: true });
 
 // Packages that must NOT be bundled — resolve from node_modules at runtime
 const external = [
-  "@xenova/transformers",
+  "@huggingface/transformers",
   "@libsql/client",
   "@anthropic-ai/sdk",
   "@modelcontextprotocol/sdk",

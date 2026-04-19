@@ -1,4 +1,4 @@
 [install]
 # Pre-trust lifecycle scripts for known safe packages
-# protobufjs is required by @modelcontextprotocol/sdk
+# protobufjs is required by onnxruntime-web (via @huggingface/transformers)
 trustedDependencies = ["protobufjs"]
