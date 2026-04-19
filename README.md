@@ -7,10 +7,31 @@ repeating the same mistakes and forgetting what you decided last week.
 
 ---
 
+## Roadmap (Phase 2)
+
+- [ ] **M0 — Pre-flight:** namespace rename (`~/.apsolut/` → `~/.apsolut-cortex/`), `bun:test` setup, migration system, CHANGELOG, docs scaffolding
+- [ ] **M1 — Eval harness:** golden set, `eval run` command (hit rate + MRR), shadow mode, baseline snapshots
+- [ ] **M2 — Retrieval audit log:** JSONL retrieval logging, `correct` command for labeling misses
+- [ ] **M3 — Encryption + backup:** libSQL-native encryption, OS keychain key storage, `backup` / `restore` commands, nightly rotation
+- [ ] **M4 — Range-linked memories:** `raw_messages` table, source ranges on memories, `memory_recall` MCP tool
+- [ ] **M5 — Visibility layer:** Obsidian markdown export, `promote` / `demote` / `tag` / `grep` / `delete` CLI commands
+- [ ] **M6 — In-session compression:** `PostToolUse` async observer, `PreCompact` hook, buffer/spill system, reflector layer
+- [ ] **M7 — Provider-agnostic routing:** Vercel AI SDK, token-tiered model routing, multi-provider health checks
+- [ ] **M8 — Simplification pass:** env var audit, trust tier collapse (4 → 2), taxonomy audit
+
+> Full plan: [docs/PHASE2-BUILD-ORDER.md](docs/PHASE2-BUILD-ORDER.md)
+
+---
+
 ## Install
 
+> **Not yet published to npm.** For now, install from source:
+
 ```bash
-npm install -g apsolut-cortex
+git clone https://github.com/apsolut-media/apsolut-cortex.git
+cd apsolut-cortex
+bun install && bun run build
+npm link
 ```
 
 ## Per project
@@ -87,7 +108,7 @@ apsolut-cortex uninstall   # remove hooks and MCP config
 ## Storage
 
 ```
-~/.apsolut/
+~/.apsolut-cortex/
   ├── memory.db       ← all memories, all projects, SQLite
   ├── registry.json   ← project registry
   └── models/         ← embedding model cache (downloads once)
