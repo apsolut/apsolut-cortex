@@ -54,19 +54,27 @@ npm link
 
 ## How it works
 
-Sessions start clean — no context dumped automatically.
-Memory is on demand. Say `"remember <topic>"` and Claude searches.
+Everything is automatic. Hooks fire on every Claude Code session:
 
-**During sessions (automatic):**
+**Session start:**
+- Last session summary injected
+- Top relevant memories loaded
+- First session shows onboarding guide
+
+**During sessions:**
 - Tool failures captured and stored
 - Config file reads noted as discoveries
 - Transcript scanned for self-corrections when Claude stops
 
-**At session end (automatic):**
+**At session end:**
 - Observations compressed into memories via Claude Haiku
 - Fallback: Ollama if no API key
 - Session summary stored for continuity
 - Stale memories decay, low-value ones pruned over time
+
+**On demand:**
+- Say `"remember <topic>"` to search memory
+- Say `"store this"` to save something explicitly
 
 ---
 
