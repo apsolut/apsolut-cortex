@@ -48,7 +48,7 @@ var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
 
 // src/db.ts
-var CORTEX_DIR = join(homedir(), ".apsolut");
+var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 var MODELS_DIR = join(CORTEX_DIR, "models");
@@ -203,7 +203,7 @@ var PKG_VERSION = JSON.parse(readFileSync2(join2(PACKAGE_ROOT, "package.json"), 
 var PROJECT_ROOT = process.cwd();
 var CLAUDE_SETTINGS = join2(homedir2(), ".claude", "settings.json");
 var MCP_JSON = join2(PROJECT_ROOT, ".mcp.json");
-var PROJECT_APSOLUT = join2(PROJECT_ROOT, ".apsolut");
+var PROJECT_APSOLUT = join2(PROJECT_ROOT, ".apsolut-cortex");
 var PROJECT_CONFIG = join2(PROJECT_APSOLUT, "project.json");
 var cmd = process.argv[2];
 switch (cmd) {
@@ -244,8 +244,8 @@ switch (cmd) {
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
-  │  DB:     ~/.apsolut/memory.db                    │
-  │  Models: ~/.apsolut/models/                      │
+  │  DB:     ~/.apsolut-cortex/memory.db              │
+  │  Models: ~/.apsolut-cortex/models/               │
   └──────────────────────────────────────────────────┘
 `);
 }
@@ -280,12 +280,12 @@ apsolut-cortex init
       name: projectName,
       created_at: new Date().toISOString()
     }, null, 2));
-    console.log(`✓ Created .apsolut/project.json`);
+    console.log(`✓ Created .apsolut-cortex/project.json`);
     console.log(`  ID:   ${projectId}`);
     console.log(`  Name: ${projectName}`);
   }
   registerProject(projectId, projectName, PROJECT_ROOT);
-  console.log(`✓ Registered in ~/.apsolut/registry.json`);
+  console.log(`✓ Registered in ~/.apsolut-cortex/registry.json`);
   const mcpServerPath = IS_DIST ? join2(__dirname2, "mcp", "server.js") : join2(__dirname2, "mcp", "server.ts");
   const mcpCommand = IS_DIST ? "node" : "bun";
   const mcpArgs = [mcpServerPath];
@@ -364,12 +364,12 @@ apsolut-cortex init
   const gitignore = join2(PROJECT_ROOT, ".gitignore");
   if (existsSync3(gitignore)) {
     const content = readFileSync2(gitignore, "utf-8");
-    if (!content.includes(".apsolut/")) {
+    if (!content.includes(".apsolut-cortex/")) {
       writeFileSync2(gitignore, content + `
 # apsolut-cortex
-.apsolut/
+.apsolut-cortex/
 `);
-      console.log(`✓ Added .apsolut/ to .gitignore`);
+      console.log(`✓ Added .apsolut-cortex/ to .gitignore`);
     }
   }
   const useColor = !process.env.NO_COLOR && process.env.TERM !== "dumb";
@@ -393,8 +393,8 @@ apsolut-cortex init
 
   ${g("✓")}  project    ${projectName}
   ${g("✓")}  id         ${projectId.slice(0, 18)}...
-  ${g("✓")}  memory     ~/.apsolut/memory.db
-  ${g("✓")}  models     ~/.apsolut/models/
+  ${g("✓")}  memory     ~/.apsolut-cortex/memory.db
+  ${g("✓")}  models     ~/.apsolut-cortex/models/
 
   ${d("──────────────────────────────────────────────────────────")}
 
@@ -456,7 +456,7 @@ async function status() {
     });
   }
   console.log(`  ├${hr}┤`);
-  console.log(`  ${bl("DB: ~/.apsolut/memory.db")}`);
+  console.log(`  ${bl("DB: ~/.apsolut-cortex/memory.db")}`);
   console.log(`  └${hr}┘
 `);
 }
@@ -510,6 +510,6 @@ function uninstall() {
     console.log(`✓ Removed ${skillsRemoved} skills from ~/.claude/skills/`);
   }
   console.log(`
-Uninstalled. DB at ~/.apsolut/memory.db kept.
+Uninstalled. DB at ~/.apsolut-cortex/memory.db kept.
 `);
 }

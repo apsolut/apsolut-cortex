@@ -79,7 +79,7 @@ var TRACKED_FILES = [
 ];
 
 // src/db.ts
-var CORTEX_DIR = join(homedir(), ".apsolut");
+var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 var MODELS_DIR = join(CORTEX_DIR, "models");
@@ -391,7 +391,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { existsSync as existsSync2, readFileSync, writeFileSync, renameSync } from "fs";
 import { join as join2 } from "path";
 import { homedir as homedir2 } from "os";
-var BREAKER_PATH = join2(homedir2(), ".apsolut", "compression-state.json");
+var BREAKER_PATH = join2(homedir2(), ".apsolut-cortex", "compression-state.json");
 var MAX_FAILURES = 3;
 var COOLDOWN_MS = 60 * 60 * 1000;
 function readBreaker() {
@@ -607,7 +607,7 @@ async function main() {
   }
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? "unknown";
-  const projectFile = join3(cwd, ".apsolut", "project.json");
+  const projectFile = join3(cwd, ".apsolut-cortex", "project.json");
   if (!existsSync3(projectFile))
     process.exit(0);
   let project = null;

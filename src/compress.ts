@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-const BREAKER_PATH = join(homedir(), ".apsolut", "compression-state.json");
+const BREAKER_PATH = join(homedir(), ".apsolut-cortex", "compression-state.json");
 const MAX_FAILURES = 3;
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 

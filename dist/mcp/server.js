@@ -44,7 +44,7 @@ var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
 
 // src/db.ts
-var CORTEX_DIR = join(homedir(), ".apsolut");
+var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 var MODELS_DIR = join(CORTEX_DIR, "models");
@@ -384,7 +384,7 @@ import { pipeline, env } from "@xenova/transformers";
 import { createClient as createClient2 } from "@libsql/client";
 import { homedir as homedir2 } from "os";
 import { join as join2 } from "path";
-var CORTEX_DIR2 = join2(homedir2(), ".apsolut");
+var CORTEX_DIR2 = join2(homedir2(), ".apsolut-cortex");
 var DB_PATH2 = join2(CORTEX_DIR2, "memory.db");
 var REGISTRY_PATH2 = join2(CORTEX_DIR2, "registry.json");
 var MODELS_DIR2 = join2(CORTEX_DIR2, "models");
@@ -446,7 +446,7 @@ var CORTEX_MANUAL_WEIGHT2 = envNum2("CORTEX_MANUAL_WEIGHT", 1.2);
 
 // src/mcp/server.ts
 var PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
-var projectFile = join3(PROJECT_PATH, ".apsolut", "project.json");
+var projectFile = join3(PROJECT_PATH, ".apsolut-cortex", "project.json");
 var project = null;
 if (existsSync2(projectFile)) {
   try {

@@ -45,7 +45,7 @@ import {
 
 // Resolve project from env or cwd
 const PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
-const projectFile = join(PROJECT_PATH, ".apsolut", "project.json");
+const projectFile = join(PROJECT_PATH, ".apsolut-cortex", "project.json");
 
 let project: { id: string; name: string } | null = null;
 if (existsSync(projectFile)) {

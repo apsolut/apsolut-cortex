@@ -70,7 +70,7 @@ async function main() {
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? crypto.randomUUID();
 
-  const projectFile = join(cwd, ".apsolut", "project.json");
+  const projectFile = join(cwd, ".apsolut-cortex", "project.json");
   if (!existsSync(projectFile)) process.exit(0);
 
   let project: { id: string; name: string } | null = null;

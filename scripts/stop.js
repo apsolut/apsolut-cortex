@@ -34,7 +34,7 @@ var CORTEX_CORRECTION_WEIGHT = envNum("CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("CORTEX_MANUAL_WEIGHT", 1.2);
 
 // src/db.ts
-var CORTEX_DIR = join(homedir(), ".apsolut");
+var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 var MODELS_DIR = join(CORTEX_DIR, "models");
@@ -263,7 +263,7 @@ async function main() {
   data.transcript = cleaned;
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? "unknown";
-  const projectFile = join2(cwd, ".apsolut", "project.json");
+  const projectFile = join2(cwd, ".apsolut-cortex", "project.json");
   if (!existsSync2(projectFile))
     process.exit(0);
   let project = null;

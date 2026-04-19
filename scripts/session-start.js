@@ -79,7 +79,7 @@ var TRACKED_FILES = [
 ];
 
 // src/db.ts
-var CORTEX_DIR = join(homedir(), ".apsolut");
+var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 var MODELS_DIR = join(CORTEX_DIR, "models");
@@ -327,7 +327,7 @@ async function main() {
   }
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? crypto.randomUUID();
-  const projectFile = join2(cwd, ".apsolut", "project.json");
+  const projectFile = join2(cwd, ".apsolut-cortex", "project.json");
   if (!existsSync2(projectFile))
     process.exit(0);
   let project = null;

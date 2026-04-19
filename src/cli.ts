@@ -37,7 +37,7 @@ const PKG_VERSION = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), 
 const PROJECT_ROOT = process.cwd();
 const CLAUDE_SETTINGS = join(homedir(), ".claude", "settings.json");
 const MCP_JSON = join(PROJECT_ROOT, ".mcp.json");
-const PROJECT_APSOLUT = join(PROJECT_ROOT, ".apsolut");
+const PROJECT_APSOLUT = join(PROJECT_ROOT, ".apsolut-cortex");
 const PROJECT_CONFIG = join(PROJECT_APSOLUT, "project.json");
 
 const cmd = process.argv[2];
@@ -64,8 +64,8 @@ switch (cmd) {
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
-  │  DB:     ~/.apsolut/memory.db                    │
-  │  Models: ~/.apsolut/models/                      │
+  │  DB:     ~/.apsolut-cortex/memory.db              │
+  │  Models: ~/.apsolut-cortex/models/               │
   └──────────────────────────────────────────────────┘
 `);
 }
@@ -111,13 +111,13 @@ async function init() {
       name: projectName,
       created_at: new Date().toISOString(),
     }, null, 2));
-    console.log(`✓ Created .apsolut/project.json`);
+    console.log(`✓ Created .apsolut-cortex/project.json`);
     console.log(`  ID:   ${projectId}`);
     console.log(`  Name: ${projectName}`);
   }
 
   registerProject(projectId, projectName, PROJECT_ROOT);
-  console.log(`✓ Registered in ~/.apsolut/registry.json`);
+  console.log(`✓ Registered in ~/.apsolut-cortex/registry.json`);
 
   // MCP server path — dist/ when published, src/ when local
   const mcpServerPath = IS_DIST
@@ -216,9 +216,9 @@ async function init() {
   const gitignore = join(PROJECT_ROOT, ".gitignore");
   if (existsSync(gitignore)) {
     const content = readFileSync(gitignore, "utf-8");
-    if (!content.includes(".apsolut/")) {
-      writeFileSync(gitignore, content + "\n# apsolut-cortex\n.apsolut/\n");
-      console.log(`✓ Added .apsolut/ to .gitignore`);
+    if (!content.includes(".apsolut-cortex/")) {
+      writeFileSync(gitignore, content + "\n# apsolut-cortex\n.apsolut-cortex/\n");
+      console.log(`✓ Added .apsolut-cortex/ to .gitignore`);
     }
   }
 
@@ -245,8 +245,8 @@ async function init() {
 
   ${g("✓")}  project    ${projectName}
   ${g("✓")}  id         ${projectId.slice(0, 18)}...
-  ${g("✓")}  memory     ~/.apsolut/memory.db
-  ${g("✓")}  models     ~/.apsolut/models/
+  ${g("✓")}  memory     ~/.apsolut-cortex/memory.db
+  ${g("✓")}  models     ~/.apsolut-cortex/models/
 
   ${d("──────────────────────────────────────────────────────────")}
 
@@ -320,7 +320,7 @@ async function status() {
   }
 
   console.log(`  ├${hr}┤`);
-  console.log(`  ${bl("DB: ~/.apsolut/memory.db")}`);
+  console.log(`  ${bl("DB: ~/.apsolut-cortex/memory.db")}`);
   console.log(`  └${hr}┘\n`);
 }
 
@@ -382,5 +382,5 @@ function uninstall() {
     console.log(`✓ Removed ${skillsRemoved} skills from ~/.claude/skills/`);
   }
 
-  console.log("\nUninstalled. DB at ~/.apsolut/memory.db kept.\n");
+  console.log("\nUninstalled. DB at ~/.apsolut-cortex/memory.db kept.\n");
 }

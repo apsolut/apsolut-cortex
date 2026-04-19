@@ -20,7 +20,7 @@ import {
 /** Anything with an execute() method — works for both Client and Transaction. */
 export type DbConn = { execute(stmt: InStatement): Promise<ResultSet> };
 
-export const CORTEX_DIR = join(homedir(), ".apsolut");
+export const CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 export const DB_PATH = join(CORTEX_DIR, "memory.db");
 export const REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 export const MODELS_DIR = join(CORTEX_DIR, "models");
