@@ -67,6 +67,8 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
+const TAG = "[apsolut-cortex]";
+
 function requireProject(): { id: string; name: string } {
   if (!project?.id) throw new Error(
     "No project found. Run: apsolut-cortex init"
@@ -237,7 +239,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return {
             content: [{
               type: "text",
-              text: `No memories found for "${query}" in project ${p.name}.\n\nYou can store something with memory_store.`,
+              text: `${TAG} No memories found for "${query}" in project ${p.name}.\n\nYou can store something with memory_store.`,
             }],
           };
         }
@@ -261,7 +263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [{
             type: "text",
-            text: `Found ${results.length} memories for "${query}":\n\n${text}\n\nCall memory_rate(id, score) after using these.`,
+            text: `${TAG} Found ${results.length} memories for "${query}":\n\n${text}\n\nCall memory_rate(id, score) after using these.`,
           }],
         };
       }
@@ -275,7 +277,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const context = args?.context ? stripPrivate(String(args.context)) : null;
 
         if (!content) {
-          return { content: [{ type: "text", text: "Error: content is required (or entirely private)" }] };
+          return { content: [{ type: "text", text: `${TAG} Error: content is required (or entirely private)` }] };
         }
 
         const textToEmbed = context ? `${content} ${context}` : content;
@@ -294,7 +296,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             return {
               content: [{
                 type: "text",
-                text: `Similar memory already exists (${dup.id}). Boosted its weight instead of duplicating.`,
+                text: `${TAG} Similar memory already exists (${dup.id}). Boosted its weight instead of duplicating.`,
               }],
             };
           }
@@ -318,7 +320,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [{
             type: "text",
-            text: `Stored memory ${id}\n${tier}/${category}: ${content}`,
+            text: `${TAG} Stored memory ${id}\n${tier}/${category}: ${content}`,
           }],
         };
       }
@@ -328,7 +330,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const score = Math.min(3, Math.max(0, Math.round(Number(args?.score ?? 1)))) as 0 | 1 | 2 | 3;
 
         if (!id) {
-          return { content: [{ type: "text", text: "Error: id is required" }] };
+          return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
         }
 
         await updateWeight(db, id, score);
@@ -337,7 +339,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [{
             type: "text",
-            text: `Rated memory ${id}: ${score}/3 (${labels[score]}). Weight updated.`,
+            text: `${TAG} Rated memory ${id}: ${score}/3 (${labels[score]}). Weight updated.`,
           }],
         };
       }
@@ -348,7 +350,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const correction = args?.correction ? String(args.correction) : null;
 
         if (!id) {
-          return { content: [{ type: "text", text: "Error: id is required" }] };
+          return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
         }
 
         await db.execute({ sql: "DELETE FROM memories WHERE id = ?", args: [id] });
@@ -380,8 +382,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [{
             type: "text",
             text: correction
-              ? `Deleted wrong memory ${id}. Stored correction as ${newId}.`
-              : `Deleted wrong memory ${id}.`,
+              ? `${TAG} Deleted wrong memory ${id}. Stored correction as ${newId}.`
+              : `${TAG} Deleted wrong memory ${id}.`,
           }],
         };
       }
@@ -423,7 +425,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const lastSummary = summaryResult.rows[0]?.summary as string | undefined;
 
         const lines = [
-          `Project: ${p.name}`,
+          `${TAG} Project: ${p.name}`,
           `Total memories: ${total} across ${sessionCount} sessions`,
           "",
           ...stats.map(
@@ -440,13 +442,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       default:
-        return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
+        return { content: [{ type: "text", text: `${TAG} Unknown tool: ${name}` }] };
     }
   } catch (e) {
     return {
       content: [{
         type: "text",
-        text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+        text: `${TAG} Error: ${e instanceof Error ? e.message : String(e)}`,
       }],
     };
   }

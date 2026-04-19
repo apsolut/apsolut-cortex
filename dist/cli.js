@@ -260,7 +260,7 @@ async function runHook(name) {
 }
 async function init() {
   console.log(`
-apsolut-cortex init
+[apsolut-cortex] init
 `);
   if (!existsSync3(PROJECT_APSOLUT)) {
     mkdirSync3(PROJECT_APSOLUT, { recursive: true });
@@ -271,7 +271,7 @@ apsolut-cortex init
     const existing = JSON.parse(readFileSync2(PROJECT_CONFIG, "utf-8"));
     projectId = existing.id;
     projectName = existing.name;
-    console.log(`✓ Project already initialised: ${projectName}`);
+    console.log(`[apsolut-cortex] ✓ Project already initialised: ${projectName}`);
   } else {
     projectId = crypto.randomUUID();
     projectName = PROJECT_ROOT.split(/[\\/]/).filter(Boolean).pop() ?? "project";
@@ -280,12 +280,12 @@ apsolut-cortex init
       name: projectName,
       created_at: new Date().toISOString()
     }, null, 2));
-    console.log(`✓ Created .apsolut-cortex/project.json`);
-    console.log(`  ID:   ${projectId}`);
-    console.log(`  Name: ${projectName}`);
+    console.log(`[apsolut-cortex] ✓ Created .apsolut-cortex/project.json`);
+    console.log(`[apsolut-cortex]   ID:   ${projectId}`);
+    console.log(`[apsolut-cortex]   Name: ${projectName}`);
   }
   registerProject(projectId, projectName, PROJECT_ROOT);
-  console.log(`✓ Registered in ~/.apsolut-cortex/registry.json`);
+  console.log(`[apsolut-cortex] ✓ Registered in ~/.apsolut-cortex/registry.json`);
   const mcpServerPath = IS_DIST ? join2(__dirname2, "mcp", "server.js") : join2(__dirname2, "mcp", "server.ts");
   const mcpCommand = IS_DIST ? "node" : "bun";
   const mcpArgs = [mcpServerPath];
@@ -303,7 +303,7 @@ apsolut-cortex init
   };
   mcp.mcpServers = servers;
   writeFileSync2(MCP_JSON, JSON.stringify(mcp, null, 2));
-  console.log(`✓ Written .mcp.json`);
+  console.log(`[apsolut-cortex] ✓ Written .mcp.json`);
   const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join2(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
   const hookEntries = {
     SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
@@ -339,7 +339,7 @@ apsolut-cortex init
   }
   settings.hooks = existingHooks;
   writeFileSync2(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-  console.log(added > 0 ? `✓ Registered ${added} hooks in ~/.claude/settings.json` : `✓ Hooks already registered`);
+  console.log(added > 0 ? `[apsolut-cortex] ✓ Registered ${added} hooks in ~/.claude/settings.json` : `[apsolut-cortex] ✓ Hooks already registered`);
   const SKILL_NAMES = ["remember", "store", "status", "forget"];
   const skillsSource = join2(PACKAGE_ROOT, "skills");
   const skillsTarget = join2(homedir2(), ".claude", "skills");
@@ -360,7 +360,7 @@ apsolut-cortex init
     writeFileSync2(dest, srcContent);
     skillsCopied++;
   }
-  console.log(skillsCopied > 0 ? `✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})` : `✓ Skills already installed`);
+  console.log(skillsCopied > 0 ? `[apsolut-cortex] ✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})` : `[apsolut-cortex] ✓ Skills already installed`);
   const gitignore = join2(PROJECT_ROOT, ".gitignore");
   if (existsSync3(gitignore)) {
     const content = readFileSync2(gitignore, "utf-8");
@@ -369,7 +369,7 @@ apsolut-cortex init
 # apsolut-cortex
 .apsolut-cortex/
 `);
-      console.log(`✓ Added .apsolut-cortex/ to .gitignore`);
+      console.log(`[apsolut-cortex] ✓ Added .apsolut-cortex/ to .gitignore`);
     }
   }
   const useColor = !process.env.NO_COLOR && process.env.TERM !== "dumb";
@@ -406,7 +406,7 @@ apsolut-cortex init
 }
 async function status() {
   if (!existsSync3(PROJECT_CONFIG)) {
-    console.log("No project found. Run: apsolut-cortex init");
+    console.log("[apsolut-cortex] No project found. Run: apsolut-cortex init");
     process.exit(1);
   }
   const project = JSON.parse(readFileSync2(PROJECT_CONFIG, "utf-8"));
@@ -441,7 +441,7 @@ async function status() {
   };
   console.log(`
   ┌${hr}┐`);
-  console.log(`  ${bl(`c o r t e x  ·  ${project.name}`)}`);
+  console.log(`  ${bl(`[apsolut-cortex]  ${project.name}`)}`);
   console.log(`  ├${hr}┤`);
   console.log(`  ${bl(`Memories : ${total}`)}`);
   console.log(`  ${bl(`Sessions : ${sessions}`)}`);
@@ -467,7 +467,7 @@ function uninstall() {
       if (mcp.mcpServers?.["apsolut-cortex"]) {
         delete mcp.mcpServers["apsolut-cortex"];
         writeFileSync2(MCP_JSON, JSON.stringify(mcp, null, 2));
-        console.log("✓ Removed from .mcp.json");
+        console.log("[apsolut-cortex] ✓ Removed from .mcp.json");
       }
     } catch {}
   }
@@ -489,7 +489,7 @@ function uninstall() {
           }
         }
         writeFileSync2(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-        console.log("✓ Removed hooks from ~/.claude/settings.json");
+        console.log("[apsolut-cortex] ✓ Removed hooks from ~/.claude/settings.json");
       }
     } catch {}
   }
@@ -507,9 +507,9 @@ function uninstall() {
     }
   }
   if (skillsRemoved > 0) {
-    console.log(`✓ Removed ${skillsRemoved} skills from ~/.claude/skills/`);
+    console.log(`[apsolut-cortex] ✓ Removed ${skillsRemoved} skills from ~/.claude/skills/`);
   }
   console.log(`
-Uninstalled. DB at ~/.apsolut-cortex/memory.db kept.
+[apsolut-cortex] Uninstalled. DB at ~/.apsolut-cortex/memory.db kept.
 `);
 }

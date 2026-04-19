@@ -460,6 +460,7 @@ if (project?.id) {
 var __mcp_dirname = dirname(fileURLToPath(import.meta.url));
 var PKG_VERSION = JSON.parse(readFileSync(resolve(__mcp_dirname, "..", "..", "package.json"), "utf-8")).version;
 var server = new Server({ name: "apsolut-cortex", version: PKG_VERSION }, { capabilities: { tools: {} } });
+var TAG = "[apsolut-cortex]";
 function requireProject() {
   if (!project?.id)
     throw new Error("No project found. Run: apsolut-cortex init");
@@ -602,7 +603,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return {
             content: [{
               type: "text",
-              text: `No memories found for "${query}" in project ${p.name}.
+              text: `${TAG} No memories found for "${query}" in project ${p.name}.
 
 You can store something with memory_store.`
             }]
@@ -623,7 +624,7 @@ You can store something with memory_store.`
         return {
           content: [{
             type: "text",
-            text: `Found ${results.length} memories for "${query}":
+            text: `${TAG} Found ${results.length} memories for "${query}":
 
 ${text}
 
@@ -639,7 +640,7 @@ Call memory_rate(id, score) after using these.`
         const tier = args?.tier ?? "semantic";
         const context = args?.context ? stripPrivate(String(args.context)) : null;
         if (!content) {
-          return { content: [{ type: "text", text: "Error: content is required (or entirely private)" }] };
+          return { content: [{ type: "text", text: `${TAG} Error: content is required (or entirely private)` }] };
         }
         const textToEmbed = context ? `${content} ${context}` : content;
         let embeddingRaw = null;
@@ -655,7 +656,7 @@ Call memory_rate(id, score) after using these.`
             return {
               content: [{
                 type: "text",
-                text: `Similar memory already exists (${dup.id}). Boosted its weight instead of duplicating.`
+                text: `${TAG} Similar memory already exists (${dup.id}). Boosted its weight instead of duplicating.`
               }]
             };
           }
@@ -676,7 +677,7 @@ Call memory_rate(id, score) after using these.`
         return {
           content: [{
             type: "text",
-            text: `Stored memory ${id}
+            text: `${TAG} Stored memory ${id}
 ${tier}/${category}: ${content}`
           }]
         };
@@ -685,14 +686,14 @@ ${tier}/${category}: ${content}`
         const id = String(args?.id ?? "");
         const score = Math.min(3, Math.max(0, Math.round(Number(args?.score ?? 1))));
         if (!id) {
-          return { content: [{ type: "text", text: "Error: id is required" }] };
+          return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
         }
         await updateWeight(db, id, score);
         const labels = ["useless", "marginal", "helpful", "directly applied"];
         return {
           content: [{
             type: "text",
-            text: `Rated memory ${id}: ${score}/3 (${labels[score]}). Weight updated.`
+            text: `${TAG} Rated memory ${id}: ${score}/3 (${labels[score]}). Weight updated.`
           }]
         };
       }
@@ -701,7 +702,7 @@ ${tier}/${category}: ${content}`
         const id = String(args?.id ?? "");
         const correction = args?.correction ? String(args.correction) : null;
         if (!id) {
-          return { content: [{ type: "text", text: "Error: id is required" }] };
+          return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
         }
         await db.execute({ sql: "DELETE FROM memories WHERE id = ?", args: [id] });
         let newId = null;
@@ -728,7 +729,7 @@ ${tier}/${category}: ${content}`
         return {
           content: [{
             type: "text",
-            text: correction ? `Deleted wrong memory ${id}. Stored correction as ${newId}.` : `Deleted wrong memory ${id}.`
+            text: correction ? `${TAG} Deleted wrong memory ${id}. Stored correction as ${newId}.` : `${TAG} Deleted wrong memory ${id}.`
           }]
         };
       }
@@ -760,7 +761,7 @@ ${tier}/${category}: ${content}`
         });
         const lastSummary = summaryResult.rows[0]?.summary;
         const lines = [
-          `Project: ${p.name}`,
+          `${TAG} Project: ${p.name}`,
           `Total memories: ${total} across ${sessionCount} sessions`,
           "",
           ...stats.map((r) => `  ${r.tier}/${r.category} [${r.trust}] \u2014 ${r.count} memories, avg weight ${r.avg_weight}, ${r.total_uses} uses`)
@@ -772,13 +773,13 @@ ${tier}/${category}: ${content}`
 `) }] };
       }
       default:
-        return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
+        return { content: [{ type: "text", text: `${TAG} Unknown tool: ${name}` }] };
     }
   } catch (e) {
     return {
       content: [{
         type: "text",
-        text: `Error: ${e instanceof Error ? e.message : String(e)}`
+        text: `${TAG} Error: ${e instanceof Error ? e.message : String(e)}`
       }]
     };
   }

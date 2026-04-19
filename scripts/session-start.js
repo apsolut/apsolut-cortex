@@ -358,12 +358,12 @@ async function main() {
     const out = [];
     out.push(top());
     out.push(em());
-    out.push(ln(center(`c o r t e x  ·  ${project.name}`, W - 4)));
+    out.push(ln(center(`[apsolut-cortex]  ${project.name}`, W - 4)));
     out.push(em());
     if (memCount === 0) {
       out.push(sep());
-      out.push(ln("Welcome! Cortex gives you persistent memory."));
-      out.push(ln("It learns from your sessions automatically."));
+      out.push(ln("Welcome! apsolut-cortex gives you persistent"));
+      out.push(ln("memory. It learns from sessions automatically."));
       out.push(em());
       out.push(sep());
       out.push(ln("What happens automatically:"));
