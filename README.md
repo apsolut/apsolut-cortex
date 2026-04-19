@@ -9,7 +9,7 @@ repeating the same mistakes and forgetting what you decided last week.
 
 ## Roadmap (Phase 2)
 
-- [ ] **M0 — Pre-flight:** namespace rename (`~/.apsolut/` → `~/.apsolut-cortex/`), `bun:test` setup, migration system, CHANGELOG, docs scaffolding
+- [x] **M0 — Pre-flight:** namespace rename (`~/.apsolut/` → `~/.apsolut-cortex/`) ✅, `bun:test` setup, migration system, CHANGELOG, docs scaffolding
 - [ ] **M1 — Eval harness:** golden set, `eval run` command (hit rate + MRR), shadow mode, baseline snapshots
 - [ ] **M2 — Retrieval audit log:** JSONL retrieval logging, `correct` command for labeling misses
 - [ ] **M3 — Encryption + backup:** libSQL-native encryption, OS keychain key storage, `backup` / `restore` commands, nightly rotation
@@ -23,18 +23,16 @@ repeating the same mistakes and forgetting what you decided last week.
 
 ---
 
+[![npm version](https://img.shields.io/npm/v/apsolut-cortex)](https://www.npmjs.com/package/apsolut-cortex)
+[![license](https://img.shields.io/npm/l/apsolut-cortex)](LICENSE)
+
 ## Install
 
-> **Not yet published to npm.** For now, install from source:
-
 ```bash
-git clone https://github.com/apsolut-media/apsolut-cortex.git
-cd apsolut-cortex
-bun install && bun run build
-npm link
+npm i -g apsolut-cortex
 ```
 
-## Per project
+Then in any project:
 
 ```bash
 cd your-project
@@ -42,6 +40,15 @@ apsolut-cortex init
 ```
 
 Restart Claude Code. Done.
+
+### Dev setup (contributors)
+
+```bash
+git clone https://github.com/apsolut-repo/apsolut-cortex.git
+cd apsolut-cortex
+bun install && bun run build
+npm link
+```
 
 ---
 
