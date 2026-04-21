@@ -10,6 +10,6 @@ Use the `memory_search` MCP tool with the user's topic as the query. Present res
 
 If no results found, suggest the user store something with `/apsolut-store`.
 
-After presenting results, call `memory_rate` on any memories the user found useful (+1) or unhelpful (-1).
+After presenting results, call `memory_rate` on memories the user acted on. Score is 0–3: `0` ignored/useless, `1` marginally relevant, `2` helpful context, `3` directly applied.
 
 Query: $ARGUMENTS

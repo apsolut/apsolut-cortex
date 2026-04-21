@@ -136,7 +136,7 @@ async function main() {
       out.push(em());
       out.push(ln("  memory_search     Find relevant memories"));
       out.push(ln("  memory_store      Save a memory explicitly"));
-      out.push(ln("  memory_rate       Upvote/downvote a memory"));
+      out.push(ln("  memory_rate       Rate a memory's usefulness (0-3)"));
       out.push(ln("  memory_contradict Delete wrong memories"));
       out.push(ln("  memory_status     Show project stats"));
       out.push(em());
