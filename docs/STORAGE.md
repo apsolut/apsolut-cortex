@@ -23,9 +23,33 @@ Tables: `projects`, `sessions`, `observations`, `memories`, `memories_fts` (FTS5
 
 Schema is defined in `src/migrations/*.ts`. Run `apsolut-cortex migrate` to apply pending migrations. See [OPERATIONS.md](OPERATIONS.md#migrations).
 
-## Multi-machine
+## Multi-machine / Turso cloud migration path
 
-Not supported. If you want it later, libSQL has a built-in sync-to-Turso path that's simpler than Litestream. Out of scope for Phase 2.
+Not supported today by design (single-machine local). But the migration path is preserved by the driver choice: `@libsql/client` is the same driver Turso cloud uses, so moving to cloud later is a URL change, not a rewrite.
+
+```ts
+// today — local file, what every install runs
+createClient({ url: `file:${DB_PATH}` })
+
+// future: pure Turso cloud (online-only, no local file)
+createClient({
+  url: "libsql://<your-db>.turso.io",
+  authToken: process.env.TURSO_AUTH_TOKEN,
+})
+
+// future: Turso cloud + local embedded replica (best of both)
+//   reads stay local and fast, writes sync to cloud in the background,
+//   second machine can connect to the same logical DB
+createClient({
+  url: `file:${DB_PATH}`,
+  syncUrl: "libsql://<your-db>.turso.io",
+  authToken: process.env.TURSO_AUTH_TOKEN,
+})
+```
+
+All schema, vector queries (`F32_BLOB`, `vector_distance_cos`), FTS5, migrations, and encryption work identically against Turso cloud — it is libSQL. The only code change is the URL plus an optional `authToken`, both of which flow through the single `createClient` call in [`src/db.ts`](../src/db.ts).
+
+Out of scope for Phase 2. When we want it, M3's encryption-at-rest work is the prerequisite (cloud-synced encrypted DB > cloud-synced plaintext).
 
 ## Encryption at rest
 

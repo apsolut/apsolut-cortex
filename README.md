@@ -5,6 +5,26 @@ Persistent memory for Claude Code projects.
 Stores corrections, decisions, and patterns across sessions so Claude stops
 repeating the same mistakes and forgetting what you decided last week.
 
+## Pairs with apsolut-scaffolding (per-project vault)
+
+Cortex is **cross-project, automatic, Claude-learned memory**.
+For **per-project, intentional, human-curated markdown** (decisions, runbooks, fires, blueprints), see [apsolut-scaffolding](https://github.com/apsolut/apsolut-scaffolding).
+
+The two are independent — use either or both. Cortex alone is fine for solo work and small repos. Add the scaffolding when a project grows enough to need a curated brain.
+
+|                   | `~/.apsolut-cortex/` (this repo)                        | `.apsolut/` (scaffolding)                                |
+|-------------------|---------------------------------------------------------|----------------------------------------------------------|
+| **Scope**         | All projects                                            | This project                                             |
+| **Lives in**      | `~/`, outside any repo                                  | The repo, with the code                                  |
+| **Format**        | SQLite + embeddings                                     | Markdown files                                           |
+| **Author**        | Claude, automatically                                   | You, intentionally                                       |
+| **Lifecycle**     | observed → validated → proven → canonical               | inbox → explore → blueprint → tasks → done               |
+| **Decay**         | Automatic (7 days)                                      | Manual (`/maintain`)                                     |
+| **Retrieval**     | Hybrid vector + keyword via MCP                         | grep, wiki-links, Obsidian                               |
+| **What goes here**| Corrections, tool failures, learned preferences — what Claude figured out the hard way | Decisions, runbooks, fires, services, rules — artifacts you curate |
+
+**30-second decision rule:** *Did Claude learn it by getting corrected? → here. Did you write it for this project on purpose? → scaffolding.*
+
 ---
 
 ## Roadmap (Phase 2)
@@ -126,7 +146,7 @@ apsolut-cortex uninstall   # remove hooks and MCP config
 
 ```
 ~/.apsolut-cortex/
-  ├── memory.db       ← all memories, all projects, SQLite
+  ├── memory.db       ← all memories, all projects, libSQL (Turso's SQLite fork)
   ├── registry.json   ← project registry
   └── models/         ← embedding model cache (downloads once)
 ```
@@ -134,6 +154,11 @@ apsolut-cortex uninstall   # remove hooks and MCP config
 All projects share one DB, namespaced by project UUID.
 No data leaves your machine except what you send to the Anthropic API
 for session compression.
+
+The on-disk format is libSQL — fully SQLite-compatible at the file level
+(any `sqlite3` CLI can read it), with the option to migrate to Turso cloud
+later by changing the connection URL alone. See [docs/STORAGE.md](docs/STORAGE.md)
+for the migration path.
 
 ---
 

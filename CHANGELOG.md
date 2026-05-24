@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] – 2026-05-24
+
+### Changed
+- README's storage section corrected: the on-disk format is libSQL (Turso's SQLite fork), not vanilla SQLite. Added a short note that any `sqlite3` CLI can still read the file and that migration to Turso cloud is a URL change.
+- `docs/STORAGE.md` expanded with the three concrete `createClient` shapes for the future Turso migration path (local file / pure cloud / cloud + embedded replica). All work identically against the existing schema — preserves the option without committing to it.
+
+## [0.6.0] – 2026-05-24
+
 ### Added
 - **M1 eval harness (Phase 2):** `evals/` directory with `golden.jsonl` (5 seeded entries, target 30), `evals/fixtures/seed.ts` (reproducible in-memory fixture DB with 10 known memories), `evals/runner.ts` (hit rate + MRR computation), `apsolut-cortex eval run` and `apsolut-cortex eval baseline` CLI subcommands. Each run scores **two** retrievals side-by-side: the production hybrid path and a tokenized-grep baseline. The runner prints a verdict line — if hybrid beats grep by ≥5pp we keep the complexity; if grep matches or wins we have license to simplify in M8. At 5 seeded queries with hand-picked content both score 5/5; the gap will only appear at 20+ entries with more paraphrased queries (per the eval README guidance).
 - **`searchGrep(db, projectId, query, limit)`** in `src/db.ts` — Karpathy "LLM reads the markdown" baseline. Tokenizes the query (≥3 chars, stop-words dropped), scores by token-overlap count, breaks ties by recency.
@@ -73,7 +81,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.7...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.7...v0.6.0
 [0.5.7]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.3...v0.5.6
 [0.5.3]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.2...v0.5.3
