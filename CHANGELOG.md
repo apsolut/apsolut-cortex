@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] – 2026-05-24
+
+### Added
+- **M2 retrieval audit log (Phase 2):** every `memory_search` call now appends one JSONL line to `~/.apsolut-cortex/logs/retrievals.jsonl` with the query, per-candidate scores (BM25 rank, vector rank, final rank), tier/trust/weight, what was actually injected back to Claude, and end-to-end latency. Shadow mode entries continue to route to `shadow.jsonl` so the production log stays clean.
+- **`apsolut-cortex correct`** CLI command: reads the most recent retrieval and flags it as a miss in `~/.apsolut-cortex/logs/corrections.jsonl`. Pass `--with "<correct answer>"` to also insert the correction as a new `correction`-category memory linked back to the failing retrieval. Karpathy's "outputs feed back in" — the user's miss-labeling gesture now grows the knowledge base instead of just instrumenting it.
+- **`src/logs.ts`** module: shared JSONL append + read helpers, used by the MCP server, the CLI `correct` command, and tests. Refactors the ad-hoc shadow-logging in `mcp/server.ts` so all three log streams share one implementation.
+
+### Changed
+- `hybridSearch()` in the MCP server now returns per-source ranks alongside the result list so the audit log can record where each memory came from in the BM25 vs vector lists.
+
 ## [0.6.2] – 2026-05-24
 
 ### Fixed
@@ -86,7 +96,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.7...v0.6.0

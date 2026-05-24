@@ -5,25 +5,7 @@ Persistent memory for Claude Code projects.
 Stores corrections, decisions, and patterns across sessions so Claude stops
 repeating the same mistakes and forgetting what you decided last week.
 
-## Pairs with apsolut-scaffolding (per-project vault)
-
-Cortex is **cross-project, automatic, Claude-learned memory**.
-For **per-project, intentional, human-curated markdown** (decisions, runbooks, fires, blueprints), see [apsolut-scaffolding](https://github.com/apsolut/apsolut-scaffolding).
-
-The two are independent — use either or both. Cortex alone is fine for solo work and small repos. Add the scaffolding when a project grows enough to need a curated brain.
-
-|                   | `~/.apsolut-cortex/` (this repo)                        | `.apsolut/` (scaffolding)                                |
-|-------------------|---------------------------------------------------------|----------------------------------------------------------|
-| **Scope**         | All projects                                            | This project                                             |
-| **Lives in**      | `~/`, outside any repo                                  | The repo, with the code                                  |
-| **Format**        | SQLite + embeddings                                     | Markdown files                                           |
-| **Author**        | Claude, automatically                                   | You, intentionally                                       |
-| **Lifecycle**     | observed → validated → proven → canonical               | inbox → explore → blueprint → tasks → done               |
-| **Decay**         | Automatic (7 days)                                      | Manual (`/maintain`)                                     |
-| **Retrieval**     | Hybrid vector + keyword via MCP                         | grep, wiki-links, Obsidian                               |
-| **What goes here**| Corrections, tool failures, learned preferences — what Claude figured out the hard way | Decisions, runbooks, fires, services, rules — artifacts you curate |
-
-**30-second decision rule:** *Did Claude learn it by getting corrected? → here. Did you write it for this project on purpose? → scaffolding.*
+> Standalone — works on its own. Optional pairing: [apsolut-scaffolding](https://github.com/apsolut/apsolut-scaffolding) for a per-project markdown vault you curate by hand.
 
 ---
 
@@ -31,7 +13,7 @@ The two are independent — use either or both. Cortex alone is fine for solo wo
 
 - [x] **M0 — Pre-flight (done):** namespace fixed to `~/.apsolut-cortex/` ✅ (`~/.apsolut/` is reserved for other `apsolut-*` tools and must never be used here), `bun:test` wired with smoke tests, migration system (`src/migrations/` + `_migrations` table + `apsolut-cortex migrate`), `CHANGELOG.md`, `docs/` scaffolding (OPERATIONS, STORAGE, PROVIDERS, CONFIG, OLLAMA, decisions/)
 - [x] **M1 — Eval harness (done):** `evals/golden.jsonl` (5 seeded entries, target 30), reproducible fixture DB via `evals/fixtures/seed.ts`, `apsolut-cortex eval run` + `eval baseline` CLI, hybrid + grep retrieval scored side-by-side (Karpathy provocation testable), shadow mode (`APSOLUT_CORTEX_SHADOW=true` logs to `~/.apsolut-cortex/logs/shadow.jsonl` without injection)
-- [ ] **M2 — Retrieval audit log:** JSONL retrieval logging, `correct` command for labeling misses
+- [x] **M2 — Retrieval audit log (done):** JSONL retrieval logging (`~/.apsolut-cortex/logs/retrievals.jsonl`) with per-source ranks, `apsolut-cortex correct [--with "<answer>"]` flags the last retrieval as a miss and (with `--with`) stores the correction as a linked memory in one gesture
 - [ ] **M3 — Encryption + backup:** libSQL-native encryption, OS keychain key storage, `backup` / `restore` commands, nightly rotation
 - [ ] **M4 — Range-linked memories:** `raw_messages` table, source ranges on memories, `memory_recall` MCP tool
 - [ ] **M5 — Visibility layer:** Obsidian markdown export, `promote` / `demote` / `tag` / `grep` / `delete` CLI commands

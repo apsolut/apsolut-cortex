@@ -23,8 +23,11 @@ import { join, resolve, dirname } from "path";
 import { homedir } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 import { registerProject } from "./registry.js";
-import { getDb } from "./db.js";
+import { getDb, insertMemory } from "./db.js";
 import { runMigrations } from "./migrations/runner.js";
+import { getLastRetrieval, logCorrection } from "./logs.js";
+import { embed } from "./embed.js";
+import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -47,6 +50,7 @@ switch (cmd) {
   case "init":               await init(); break;
   case "status":             await status(); break;
   case "migrate":            await migrate(); break;
+  case "correct":            await correctCmd(process.argv.slice(3)); break;
   case "eval":               await evalCmd(process.argv[3]); break;
   case "uninstall":          uninstall(); break;
   case "hook:session-start": await runHook("session-start"); break;
@@ -65,6 +69,7 @@ switch (cmd) {
   │    init        Set up memory for a project       │
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
+  │    correct     Flag last retrieval as a miss     │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
@@ -357,6 +362,72 @@ async function migrate() {
     if (result.skipped.length > 0) {
       console.log(`[apsolut-cortex]   Skipped ${result.skipped.length} already-applied migration(s)`);
     }
+  }
+}
+
+// ── Correct ───────────────────────────────────────────────────────────────────
+
+/**
+ * Flag the most recent retrieval as a miss. Optionally store the correct
+ * answer as a new memory in the same gesture (Karpathy "outputs feed back
+ * in"): `apsolut-cortex correct --with "the actual answer is X"`.
+ */
+async function correctCmd(args: string[]) {
+  const withIdx = args.findIndex((a) => a === "--with");
+  const correctionText =
+    withIdx >= 0 && args[withIdx + 1] ? args.slice(withIdx + 1).join(" ") : null;
+
+  const last = getLastRetrieval();
+  if (!last) {
+    console.log("[apsolut-cortex] No retrievals on record yet — nothing to correct.");
+    console.log("[apsolut-cortex] (Retrievals are logged to ~/.apsolut-cortex/logs/retrievals.jsonl when Claude calls memory_search.)");
+    return;
+  }
+
+  console.log(`[apsolut-cortex] Last retrieval:`);
+  console.log(`  query:   ${last.query}`);
+  console.log(`  project: ${last.project_name}`);
+  console.log(`  matches: ${last.candidates.length} (${last.injected_ids.length} injected)`);
+
+  let correctionMemoryId: string | null = null;
+
+  if (correctionText) {
+    const db = await getDb();
+    let embedding: Float32Array | null = null;
+    try {
+      embedding = await embed(correctionText);
+    } catch (e) {
+      console.error(`[apsolut-cortex] embedding failed for correction: ${e}`);
+    }
+
+    correctionMemoryId = await insertMemory(db, {
+      project_id: last.project_id,
+      tier: "episodic",
+      category: "correction",
+      trust: "observed",
+      content: correctionText,
+      context: `Correction for query: "${last.query}"`,
+      source: "correction-cli",
+      embedding,
+      weight: CORTEX_CORRECTION_WEIGHT,
+      session_id: null,
+    });
+
+    console.log(`[apsolut-cortex] ✓ Stored correction memory ${correctionMemoryId}`);
+  }
+
+  logCorrection({
+    ts: Date.now(),
+    retrieval_ts: last.ts,
+    retrieval_query: last.query,
+    is_miss: true,
+    correction_memory_id: correctionMemoryId,
+    correction_text: correctionText,
+  });
+
+  console.log(`[apsolut-cortex] ✓ Flagged retrieval as a miss in ~/.apsolut-cortex/logs/corrections.jsonl`);
+  if (!correctionText) {
+    console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
   }
 }
 

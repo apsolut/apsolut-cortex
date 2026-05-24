@@ -8,9 +8,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
-import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync } from "fs";
-import { homedir as homedir3 } from "os";
-import { join as join3, dirname, resolve } from "path";
+import { existsSync as existsSync3, readFileSync as readFileSync2 } from "fs";
+import { join as join4, dirname as dirname2, resolve } from "path";
 import { fileURLToPath } from "url";
 
 // src/db.ts
@@ -606,36 +605,48 @@ var CORTEX_WEIGHT_CAP2 = envNum2("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT2 = envNum2("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT2 = envNum2("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 
+// src/logs.ts
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync } from "fs";
+import { homedir as homedir3 } from "os";
+import { dirname, join as join3 } from "path";
+var LOGS_DIR = join3(homedir3(), ".apsolut-cortex", "logs");
+var RETRIEVALS_PATH = join3(LOGS_DIR, "retrievals.jsonl");
+var CORRECTIONS_PATH = join3(LOGS_DIR, "corrections.jsonl");
+var SHADOW_PATH = join3(LOGS_DIR, "shadow.jsonl");
+function appendJsonl(path, entry) {
+  try {
+    const dir = dirname(path);
+    if (!existsSync2(dir))
+      mkdirSync2(dir, { recursive: true });
+    appendFileSync(path, JSON.stringify(entry) + `
+`);
+  } catch (e) {
+    process.stderr.write(`[apsolut-cortex] log write failed (${path}): ${e}
+`);
+  }
+}
+function logRetrieval(entry) {
+  appendJsonl(entry.shadow ? SHADOW_PATH : RETRIEVALS_PATH, entry);
+}
+
 // src/mcp/server.ts
 var PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
-var projectFile = join3(PROJECT_PATH, ".apsolut-cortex", "project.json");
+var projectFile = join4(PROJECT_PATH, ".apsolut-cortex", "project.json");
 var project = null;
-if (existsSync2(projectFile)) {
+if (existsSync3(projectFile)) {
   try {
-    project = JSON.parse(readFileSync(projectFile, "utf-8"));
+    project = JSON.parse(readFileSync2(projectFile, "utf-8"));
   } catch {}
 }
 var db = await getDb();
 if (project?.id) {
   await upsertProject(db, { id: project.id, name: project.name, path: PROJECT_PATH });
 }
-var __mcp_dirname = dirname(fileURLToPath(import.meta.url));
-var PKG_VERSION = JSON.parse(readFileSync(resolve(__mcp_dirname, "..", "..", "package.json"), "utf-8")).version;
+var __mcp_dirname = dirname2(fileURLToPath(import.meta.url));
+var PKG_VERSION = JSON.parse(readFileSync2(resolve(__mcp_dirname, "..", "..", "package.json"), "utf-8")).version;
 var server = new Server({ name: "apsolut-cortex", version: PKG_VERSION }, { capabilities: { tools: {} } });
 var TAG = "[apsolut-cortex]";
 var SHADOW_MODE = ["true", "1", "yes"].includes((process.env.APSOLUT_CORTEX_SHADOW ?? "").toLowerCase());
-var SHADOW_LOG_PATH = join3(homedir3(), ".apsolut-cortex", "logs", "shadow.jsonl");
-function shadowLog(entry) {
-  try {
-    const dir = dirname(SHADOW_LOG_PATH);
-    if (!existsSync2(dir))
-      mkdirSync2(dir, { recursive: true });
-    appendFileSync(SHADOW_LOG_PATH, JSON.stringify({ ts: Date.now(), ...entry }) + `
-`);
-  } catch (e) {
-    console.error(`[apsolut-cortex] shadow log write failed: ${e}`);
-  }
-}
 function requireProject() {
   if (!project?.id)
     throw new Error("No project found. Run: apsolut-cortex init");
@@ -652,6 +663,15 @@ async function hybridSearch(projectId, query, limit) {
   } catch (e) {
     console.error(`[apsolut-cortex] search embedding failed, falling back to BM25: ${e}`);
   }
+  const ranks = new Map;
+  bm25.forEach((m, i) => {
+    ranks.set(m.id, { bm25_rank: i + 1, vector_rank: null });
+  });
+  vectorResults.forEach((m, i) => {
+    const cur = ranks.get(m.id) ?? { bm25_rank: null, vector_rank: null };
+    cur.vector_rank = i + 1;
+    ranks.set(m.id, cur);
+  });
   const allItems = new Map;
   bm25.forEach((m) => allItems.set(m.id, m));
   vectorResults.forEach((m) => allItems.set(m.id, m));
@@ -660,7 +680,7 @@ async function hybridSearch(projectId, query, limit) {
     ...m,
     similarity: vectorResults.find((v) => v.id === m.id)?.similarity ?? 0
   }));
-  return applyMMR(withSimilarity, queryEmb, limit);
+  return { results: applyMMR(withSimilarity, queryEmb, limit), ranks };
 }
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -766,7 +786,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const tierFilter = args?.tier;
         const trustFilter = args?.trust;
         const t0 = Date.now();
-        let results = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER2);
+        const { results: rawResults, ranks } = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER2);
+        let results = rawResults;
         if (tierFilter)
           results = results.filter((m) => m.tier === tierFilter);
         if (trustFilter) {
@@ -776,21 +797,30 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         results = results.slice(0, limit);
         const latencyMs = Date.now() - t0;
+        const injectedIds = SHADOW_MODE ? [] : results.map((r) => r.id);
+        const candidates = results.map((r, i) => {
+          const rk = ranks.get(r.id);
+          return {
+            id: r.id,
+            tier: r.tier,
+            trust: r.trust,
+            weight: r.weight,
+            bm25_rank: rk?.bm25_rank ?? null,
+            vector_rank: rk?.vector_rank ?? null,
+            final_rank: i + 1
+          };
+        });
+        logRetrieval({
+          ts: Date.now(),
+          project_id: p.id,
+          project_name: p.name,
+          query,
+          candidates,
+          injected_ids: injectedIds,
+          latency_ms: latencyMs,
+          shadow: SHADOW_MODE
+        });
         if (SHADOW_MODE) {
-          shadowLog({
-            query,
-            project_id: p.id,
-            project_name: p.name,
-            injected_ids: [],
-            would_have_injected: results.map((r) => ({
-              id: r.id,
-              tier: r.tier,
-              trust: r.trust,
-              weight: r.weight,
-              content: r.content.slice(0, 200)
-            })),
-            latency_ms: latencyMs
-          });
           return {
             content: [{
               type: "text",

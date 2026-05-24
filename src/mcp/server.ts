@@ -16,8 +16,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
-import { homedir } from "os";
+import { existsSync, readFileSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -43,6 +42,7 @@ import {
   CORTEX_CORRECTION_WEIGHT,
   CORTEX_MANUAL_WEIGHT,
 } from "../config.js";
+import { logRetrieval, type RetrievalCandidate } from "../logs.js";
 
 // Resolve project from env or cwd
 const PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
@@ -71,37 +71,12 @@ const server = new Server(
 const TAG = "[apsolut-cortex]";
 
 // Shadow mode — when APSOLUT_CORTEX_SHADOW is truthy, memory_search still
-// runs retrieval but returns no results to Claude. The would-have-been
-// matches are appended to ~/.apsolut-cortex/logs/shadow.jsonl so we can
-// observe retrieval quality without affecting the conversation. Useful
-// when testing a tuning change against a real session before exposing it.
+// runs retrieval but returns no results to Claude. Would-be matches go to
+// shadow.jsonl instead of retrievals.jsonl. Lets us tune retrieval against
+// real sessions without affecting the conversation.
 const SHADOW_MODE = ["true", "1", "yes"].includes(
   (process.env.APSOLUT_CORTEX_SHADOW ?? "").toLowerCase()
 );
-const SHADOW_LOG_PATH = join(homedir(), ".apsolut-cortex", "logs", "shadow.jsonl");
-
-function shadowLog(entry: {
-  query: string;
-  project_id: string;
-  project_name: string;
-  injected_ids: string[];
-  would_have_injected: Array<{
-    id: string; tier: string; trust: string; weight: number; content: string;
-  }>;
-  latency_ms: number;
-}) {
-  try {
-    const dir = dirname(SHADOW_LOG_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(
-      SHADOW_LOG_PATH,
-      JSON.stringify({ ts: Date.now(), ...entry }) + "\n"
-    );
-  } catch (e) {
-    // Shadow logging must never break the MCP server.
-    console.error(`[apsolut-cortex] shadow log write failed: ${e}`);
-  }
-}
 
 function requireProject(): { id: string; name: string } {
   if (!project?.id) throw new Error(
@@ -110,11 +85,17 @@ function requireProject(): { id: string; name: string } {
   return project;
 }
 
+interface HybridResult {
+  results: Memory[];
+  /** Per-memory rank in each retrieval source, for audit logging. */
+  ranks: Map<string, { bm25_rank: number | null; vector_rank: number | null }>;
+}
+
 async function hybridSearch(
   projectId: string,
   query: string,
   limit: number
-): Promise<Memory[]> {
+): Promise<HybridResult> {
   const fetchCount = limit * CORTEX_SEARCH_MULTIPLIER;
   const bm25 = await searchBM25(db, projectId, query, fetchCount);
 
@@ -127,21 +108,28 @@ async function hybridSearch(
     console.error(`[apsolut-cortex] search embedding failed, falling back to BM25: ${e}`);
   }
 
-  // Build combined map
+  // Track per-source ranks for audit logging (1-indexed; null = absent).
+  const ranks = new Map<string, { bm25_rank: number | null; vector_rank: number | null }>();
+  bm25.forEach((m, i) => {
+    ranks.set(m.id, { bm25_rank: i + 1, vector_rank: null });
+  });
+  vectorResults.forEach((m, i) => {
+    const cur = ranks.get(m.id) ?? { bm25_rank: null, vector_rank: null };
+    cur.vector_rank = i + 1;
+    ranks.set(m.id, cur);
+  });
+
   const allItems = new Map<string, Memory>();
   bm25.forEach((m) => allItems.set(m.id, m));
   vectorResults.forEach((m) => allItems.set(m.id, m));
 
-  // Merge with RRF
   const merged = mergeRRF(bm25, vectorResults, fetchCount, allItems);
-
-  // Apply MMR for diversity
   const withSimilarity = merged.map((m) => ({
     ...m,
     similarity: vectorResults.find((v) => v.id === m.id)?.similarity ?? 0,
   }));
 
-  return applyMMR(withSimilarity, queryEmb, limit);
+  return { results: applyMMR(withSimilarity, queryEmb, limit), ranks };
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -257,8 +245,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const trustFilter = args?.trust as string | undefined;
 
         const t0 = Date.now();
-        let results = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER);
+        const { results: rawResults, ranks } = await hybridSearch(
+          p.id,
+          query,
+          limit * CORTEX_SEARCH_MULTIPLIER
+        );
 
+        let results = rawResults;
         if (tierFilter) results = results.filter((m) => m.tier === tierFilter);
         if (trustFilter) {
           const trustOrder = ["observed", "validated", "proven", "canonical"];
@@ -271,21 +264,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         results = results.slice(0, limit);
         const latencyMs = Date.now() - t0;
 
+        // Log every retrieval (shadow mode routes to shadow.jsonl instead).
+        const injectedIds = SHADOW_MODE ? [] : results.map((r) => r.id);
+        const candidates: RetrievalCandidate[] = results.map((r, i) => {
+          const rk = ranks.get(r.id);
+          return {
+            id: r.id,
+            tier: r.tier,
+            trust: r.trust,
+            weight: r.weight,
+            bm25_rank: rk?.bm25_rank ?? null,
+            vector_rank: rk?.vector_rank ?? null,
+            final_rank: i + 1,
+          };
+        });
+        logRetrieval({
+          ts: Date.now(),
+          project_id: p.id,
+          project_name: p.name,
+          query,
+          candidates,
+          injected_ids: injectedIds,
+          latency_ms: latencyMs,
+          shadow: SHADOW_MODE,
+        });
+
         if (SHADOW_MODE) {
-          shadowLog({
-            query,
-            project_id: p.id,
-            project_name: p.name,
-            injected_ids: [],
-            would_have_injected: results.map((r) => ({
-              id: r.id,
-              tier: r.tier,
-              trust: r.trust,
-              weight: r.weight,
-              content: r.content.slice(0, 200),
-            })),
-            latency_ms: latencyMs,
-          });
           return {
             content: [{
               type: "text",
