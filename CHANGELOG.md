@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.2] – 2026-05-24
+
+### Fixed
+- `apsolut-cortex eval` now prints a clean "maintainer-only" message when invoked from a global npm install, instead of dying on a missing `evals/runner.ts` (the eval harness lives outside the published tarball by design). Help banner cleaned up accordingly.
+
 ## [0.6.1] – 2026-05-24
 
 ### Changed
@@ -81,7 +86,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.7...v0.6.0
 [0.5.7]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.6...v0.5.7

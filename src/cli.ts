@@ -65,8 +65,6 @@ switch (cmd) {
   │    init        Set up memory for a project       │
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
-  │    eval run    Run retrieval evals               │
-  │    eval baseline   Snapshot current scores       │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
@@ -365,11 +363,22 @@ async function migrate() {
 // ── Eval ──────────────────────────────────────────────────────────────────────
 
 async function evalCmd(subcommand: string | undefined) {
+  // Eval is a maintainer-only tool: it imports from src/ and reads from
+  // evals/, neither of which are in the npm tarball (see `files` in
+  // package.json). When running from a global npm install (`IS_DIST`),
+  // explain that and bail out cleanly instead of dying on a missing file.
+  if (IS_DIST) {
+    console.log("[apsolut-cortex] `eval` is a maintainer-only command.");
+    console.log("[apsolut-cortex] Run it from a cloned repo:");
+    console.log("    git clone https://github.com/apsolut/apsolut-cortex.git");
+    console.log("    cd apsolut-cortex && bun install");
+    console.log("    bun run src/cli.ts eval run");
+    return;
+  }
+
   // Eval modules are loaded lazily so the CLI startup cost (importing the
   // embedding model, seed fixtures, etc.) is paid only when running evals.
-  const evalsRoot = IS_DIST
-    ? join(PACKAGE_ROOT, "evals")
-    : join(PACKAGE_ROOT, "evals");
+  const evalsRoot = join(PACKAGE_ROOT, "evals");
   const runnerModule = pathToFileURL(join(evalsRoot, "runner.ts")).href;
   const {
     runEvals,

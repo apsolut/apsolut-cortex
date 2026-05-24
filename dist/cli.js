@@ -369,8 +369,6 @@ switch (cmd) {
   │    init        Set up memory for a project       │
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
-  │    eval run    Run retrieval evals               │
-  │    eval baseline   Snapshot current scores       │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
@@ -615,7 +613,15 @@ async function migrate() {
   }
 }
 async function evalCmd(subcommand) {
-  const evalsRoot = IS_DIST ? join2(PACKAGE_ROOT, "evals") : join2(PACKAGE_ROOT, "evals");
+  if (IS_DIST) {
+    console.log("[apsolut-cortex] `eval` is a maintainer-only command.");
+    console.log("[apsolut-cortex] Run it from a cloned repo:");
+    console.log("    git clone https://github.com/apsolut/apsolut-cortex.git");
+    console.log("    cd apsolut-cortex && bun install");
+    console.log("    bun run src/cli.ts eval run");
+    return;
+  }
+  const evalsRoot = join2(PACKAGE_ROOT, "evals");
   const runnerModule = pathToFileURL(join2(evalsRoot, "runner.ts")).href;
   const {
     runEvals,
