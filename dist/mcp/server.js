@@ -43,25 +43,11 @@ var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 
-// src/db.ts
-var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
-var DB_PATH = join(CORTEX_DIR, "memory.db");
-var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
-var MODELS_DIR = join(CORTEX_DIR, "models");
-var _db = null;
-var _initialized = false;
-async function getDb() {
-  if (_db && _initialized)
-    return _db;
-  if (!existsSync(CORTEX_DIR))
-    mkdirSync(CORTEX_DIR, { recursive: true });
-  if (!existsSync(MODELS_DIR))
-    mkdirSync(MODELS_DIR, { recursive: true });
-  if (!_db) {
-    _db = createClient({ url: `file:${DB_PATH}` });
-  }
-  if (!_initialized) {
-    await _db.executeMultiple(`
+// src/migrations/001-initial-schema.ts
+var migration = {
+  name: "001-initial-schema",
+  async up(client) {
+    await client.executeMultiple(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
       PRAGMA foreign_keys = ON;
@@ -161,6 +147,101 @@ async function getDb() {
         PRIMARY KEY (project_id, path)
       );
     `);
+  }
+};
+var _001_initial_schema_default = migration;
+
+// src/migrations/runner.ts
+var MIGRATIONS = [
+  _001_initial_schema_default
+];
+var LOCK_TIMEOUT_MS = 30000;
+async function runMigrations(client, migrations = MIGRATIONS) {
+  await ensureMigrationsTable(client);
+  await acquireLock(client);
+  try {
+    const applied = await getAppliedNames(client);
+    const result = { applied: [], skipped: [] };
+    for (const m of migrations) {
+      if (applied.has(m.name)) {
+        result.skipped.push(m.name);
+        continue;
+      }
+      try {
+        await m.up(client);
+        await client.execute({
+          sql: "INSERT INTO _migrations (name, applied_at) VALUES (?, ?)",
+          args: [m.name, Date.now()]
+        });
+        result.applied.push(m.name);
+      } catch (err) {
+        throw new Error(`[apsolut-cortex] migration ${m.name} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return result;
+  } finally {
+    await releaseLock(client);
+  }
+}
+async function ensureMigrationsTable(client) {
+  await client.executeMultiple(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT NOT NULL UNIQUE,
+      applied_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS _migrations_lock (
+      id           INTEGER PRIMARY KEY CHECK (id = 1),
+      pid          INTEGER NOT NULL,
+      acquired_at  INTEGER NOT NULL
+    );
+  `);
+}
+async function getAppliedNames(client) {
+  const result = await client.execute("SELECT name FROM _migrations");
+  return new Set(result.rows.map((r) => r.name));
+}
+async function acquireLock(client) {
+  const now = Date.now();
+  await client.execute({
+    sql: "DELETE FROM _migrations_lock WHERE acquired_at < ?",
+    args: [now - LOCK_TIMEOUT_MS]
+  });
+  try {
+    await client.execute({
+      sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
+      args: [process.pid, now]
+    });
+  } catch {
+    const held = await client.execute("SELECT pid, acquired_at FROM _migrations_lock WHERE id = 1");
+    const row = held.rows[0];
+    throw new Error(`[apsolut-cortex] migration lock held by pid ${row?.pid} since ${new Date(row?.acquired_at).toISOString()}. If this is stale, run: DELETE FROM _migrations_lock;`);
+  }
+}
+async function releaseLock(client) {
+  await client.execute("DELETE FROM _migrations_lock WHERE id = 1");
+}
+
+// src/db.ts
+var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
+var DB_PATH = join(CORTEX_DIR, "memory.db");
+var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
+var MODELS_DIR = join(CORTEX_DIR, "models");
+var _db = null;
+var _initialized = false;
+async function getDb() {
+  if (_db && _initialized)
+    return _db;
+  if (!existsSync(CORTEX_DIR))
+    mkdirSync(CORTEX_DIR, { recursive: true });
+  if (!existsSync(MODELS_DIR))
+    mkdirSync(MODELS_DIR, { recursive: true });
+  if (!_db) {
+    _db = createClient({ url: `file:${DB_PATH}` });
+  }
+  if (!_initialized) {
+    await runMigrations(_db);
     _initialized = true;
   }
   return _db;

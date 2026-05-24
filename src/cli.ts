@@ -24,6 +24,7 @@ import { homedir } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 import { registerProject } from "./registry.js";
 import { getDb } from "./db.js";
+import { runMigrations } from "./migrations/runner.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,6 +46,7 @@ const cmd = process.argv[2];
 switch (cmd) {
   case "init":               await init(); break;
   case "status":             await status(); break;
+  case "migrate":            await migrate(); break;
   case "uninstall":          uninstall(); break;
   case "hook:session-start": await runHook("session-start"); break;
   case "hook:post-tool-use": await runHook("post-tool-use"); break;
@@ -61,10 +63,11 @@ switch (cmd) {
   │  Commands:                                       │
   │    init        Set up memory for a project       │
   │    status      Show memory stats                 │
+  │    migrate     Apply pending schema migrations   │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
-  │  DB:     ~/.apsolut-cortex/memory.db              │
+  │  DB:     ~/.apsolut-cortex/memory.db             │
   │  Models: ~/.apsolut-cortex/models/               │
   └──────────────────────────────────────────────────┘
 `);
@@ -334,6 +337,26 @@ async function status() {
   console.log(`  ├${hr}┤`);
   console.log(`  ${bl("DB: ~/.apsolut-cortex/memory.db")}`);
   console.log(`  └${hr}┘\n`);
+}
+
+// ── Migrate ───────────────────────────────────────────────────────────────────
+
+async function migrate() {
+  // getDb() runs migrations automatically as part of init. Calling it here is
+  // enough; we then re-run runMigrations() explicitly so we can report which
+  // ones actually ran vs were skipped.
+  const db = await getDb();
+  const result = await runMigrations(db);
+
+  if (result.applied.length === 0) {
+    console.log(`[apsolut-cortex] ✓ Schema up to date (${result.skipped.length} migrations on record)`);
+  } else {
+    console.log(`[apsolut-cortex] ✓ Applied ${result.applied.length} migration(s):`);
+    for (const name of result.applied) console.log(`  + ${name}`);
+    if (result.skipped.length > 0) {
+      console.log(`[apsolut-cortex]   Skipped ${result.skipped.length} already-applied migration(s)`);
+    }
+  }
 }
 
 // ── Uninstall ─────────────────────────────────────────────────────────────────

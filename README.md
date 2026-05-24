@@ -9,8 +9,8 @@ repeating the same mistakes and forgetting what you decided last week.
 
 ## Roadmap (Phase 2)
 
-- [x] **M0 — Pre-flight:** namespace rename (`~/.apsolut/` → `~/.apsolut-cortex/`) ✅, `bun:test` setup, migration system, CHANGELOG, docs scaffolding
-- [ ] **M1 — Eval harness:** golden set, `eval run` command (hit rate + MRR), shadow mode, baseline snapshots
+- [x] **M0 — Pre-flight (done):** namespace fixed to `~/.apsolut-cortex/` ✅ (`~/.apsolut/` is reserved for other `apsolut-*` tools and must never be used here), `bun:test` wired with smoke tests, migration system (`src/migrations/` + `_migrations` table + `apsolut-cortex migrate`), `CHANGELOG.md`, `docs/` scaffolding (OPERATIONS, STORAGE, PROVIDERS, CONFIG, OLLAMA, decisions/)
+- [ ] **M1 — Eval harness:** golden set, `eval run` command (hit rate + MRR for hybrid **and** grep baseline), shadow mode, baseline snapshots
 - [ ] **M2 — Retrieval audit log:** JSONL retrieval logging, `correct` command for labeling misses
 - [ ] **M3 — Encryption + backup:** libSQL-native encryption, OS keychain key storage, `backup` / `restore` commands, nightly rotation
 - [ ] **M4 — Range-linked memories:** `raw_messages` table, source ranges on memories, `memory_recall` MCP tool

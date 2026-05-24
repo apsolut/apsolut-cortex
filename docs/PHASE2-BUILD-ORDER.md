@@ -58,7 +58,7 @@ If you finish a milestone early, do not start a deferred item. Re-read this prom
 
 Quick infrastructure that everything else assumes. Get this out of the way in one focused pass. Each item is small; the whole thing is half a day of work.
 
-- **Namespace rename:** rename all `~/.apsolut/` references in the codebase to `~/.apsolut-cortex/`. Touches at minimum: `CORTEX_DIR` in `src/db.ts`, `DB_PATH` (target: `~/.apsolut-cortex/memory.db`), `REGISTRY_PATH` (target: `~/.apsolut-cortex/registry.json`), `MODELS_DIR` (target: `~/.apsolut-cortex/models/`), README, hook paths, any tests or fixtures. The user is keeping the `apsolut-cortex` namespace deliberately so future `apsolut-*` projects (e.g. `apsolut-tokenoptimizer`) can sit alongside without collision. If a dev machine has an existing `~/.apsolut/` directory with a real DB, write a one-shot `apsolut-cortex migrate-namespace` command that moves the directory atomically (or document the manual `mv` if simpler).
+- **Namespace rule (permanent, not a one-time rename):** this plugin **must always** use `~/.apsolut-cortex/` and **must never** touch `~/.apsolut/`. The user reserves `~/.apsolut/` for *other* `apsolut-*` tools (e.g. `apsolut-tokenoptimizer`) — writing into it would collide with their data. All paths flow through `CORTEX_DIR` in `src/db.ts` (`DB_PATH` → `~/.apsolut-cortex/memory.db`, `REGISTRY_PATH` → `~/.apsolut-cortex/registry.json`, `MODELS_DIR` → `~/.apsolut-cortex/models/`); README, hook paths, tests, and fixtures all follow. This is enforced — any future PR introducing `~/.apsolut/` (without the `-cortex` suffix) is a bug. The historical rename from `~/.apsolut/` shipped in commit `9046582`.
 - **Test framework:** wire up `bun:test` (built-in, no extra dep). Convention: `*.test.ts` colocated with source. Run via `bun test`. Add one trivial smoke test to confirm the runner works.
 - **Migration system:** write a minimal migration runner. Schema:
   - `_migrations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)`
@@ -68,25 +68,27 @@ Quick infrastructure that everything else assumes. Get this out of the way in on
 - **CHANGELOG:** create `CHANGELOG.md` at repo root, Keep-a-Changelog format. Add an entry for every milestone going forward.
 - **Docs scaffolding:** create `docs/decisions/` (ADR home, format `NNN-title.md`), `docs/OPERATIONS.md`, `docs/STORAGE.md`, `docs/PROVIDERS.md`, `docs/CONFIG.md`, `docs/OLLAMA.md`. Each starts as a one-line placeholder; later milestones fill them in.
 
-**Done when:** `bun test` runs (passing or failing — just runs), `apsolut-cortex migrate` applies the existing schema through the migration system idempotently, namespace rename is complete with no `~/.apsolut/` references remaining in the codebase, and CHANGELOG + docs/ scaffolding exist.
+**Done when:** `bun test` runs (passing or failing — just runs), `apsolut-cortex migrate` applies the existing schema through the migration system idempotently, no `~/.apsolut/` references (without the `-cortex` suffix) remain anywhere in the repo, and CHANGELOG + docs/ scaffolding exist.
 
 ### Milestone 1 — Eval harness (do this first after pre-flight, do not skip)
 
 - Create `evals/` at repo root.
 - Add `evals/golden.jsonl` with the schema for 30 hand-labelable prompt/expected-retrieval pairs. Seed 5 example entries. Document format in `evals/README.md` and ask the user to fill the remaining 25.
 - Add `apsolut-cortex eval run` CLI command. For each prompt: run retrieval, compare top-5 against expected, output hit rate, MRR, per-prompt diff.
-- Add `shadow` mode: when `CORTEX_SHADOW=true`, compute what *would* have been retrieved but inject nothing. Log to `~/.apsolut-cortex/logs/shadow.jsonl`.
+- Add `shadow` mode: when `APSOLUT_CORTEX_SHADOW=true`, compute what *would* have been retrieved but inject nothing. Log to `~/.apsolut-cortex/logs/shadow.jsonl`.
 - Add `apsolut-cortex eval baseline` — snapshots current scores to `evals/baseline.json`. Subsequent runs report delta vs baseline.
+- **Grep baseline (Karpathy provocation):** add a second retrieval function `searchGrep(db, projectId, query, limit)` — naive substring match over `content` + `context`, recency-ordered, no embeddings, no FTS, no MMR. The eval runner runs **both** hybrid and grep against every golden entry and reports both scores side-by-side. Reason: at single-user scale (hundreds to low thousands of memories), Karpathy's experience with a 400K-word personal wiki is that an LLM reading well-organized markdown with auto-maintained indexes can match or beat "fancy RAG." If hybrid does not beat grep by **≥5 percentage points on hit rate** at our scale, we have license to simplify the retrieval stack in M8 — possibly dropping vector search entirely. This is testable, falsifiable, and the cheapest way to validate that our complexity is earning its keep.
 
-**Done when:** `apsolut-cortex eval run` produces hit rate + MRR against the seeded 5 prompts and writes a baseline file.
+**Done when:** `apsolut-cortex eval run` produces hit rate + MRR **for both hybrid and grep retrievals** against the seeded 5 prompts and writes a baseline file capturing both.
 
-### Milestone 2 — Retrieval audit log
+### Milestone 2 — Retrieval audit log + bidirectional capture
 
 - Every retrieval call writes one JSONL line to `~/.apsolut-cortex/logs/retrievals.jsonl`:
   `{ts, session_id, query, candidates: [{id, score_bm25, score_vector, score_rrf, score_mmr, tier, trust}], injected_ids, latency_ms}`
 - Add `apsolut-cortex correct` slash command. User invokes it when Claude got something wrong. It tags the most recent retrieval entry as a miss. This is your cheapest labeled signal — collect it from day one.
+- **Bidirectional capture (Karpathy "outputs feed back in"):** `apsolut-cortex correct` accepts an optional `--with "<correct answer>"` flag. When provided, store the correction as a new memory (category=`correction`, weight=`APSOLUT_CORTEX_CORRECTION_WEIGHT`, source=`correction-cli`) with a `correction_of` link pointing at the retrieval log entry that was wrong. This closes the loop: a miss is not just labeled — the right answer enters the knowledge base in the same gesture. Without this, the user labels misses but the system keeps making the same retrieval mistake until a future session happens to store the right thing. Karpathy's wiki grows because every exploration output gets "filed back."
 
-**Done when:** retrieval log accumulates entries and `apsolut-cortex correct` annotates the most recent one.
+**Done when:** retrieval log accumulates entries, `apsolut-cortex correct` annotates the most recent one, and `apsolut-cortex correct --with "<text>"` stores a linked correction memory in one command.
 
 ### Milestone 3 — Encryption + backup (libSQL-native, non-negotiable)
 
@@ -107,6 +109,8 @@ The Phase 1 stack uses `@libsql/client`. libSQL has its own encryption and its o
 
 This milestone depends on the migration system from M0.
 
+> The raw-vs-compiled split (compressed memories in `memories`, full transcripts in `raw_messages` with offsets bridging them) is the same architecture Karpathy describes for his personal LLM knowledge base: `raw/` holds source documents, the `.md` wiki is the compiled view, the LLM moves between them. Independent validation that this is the right shape; no scope change needed here.
+
 - Migration `004-range-linked-memories.ts`: add columns to `memories` table — `source_session_id TEXT`, `source_start_msg_idx INTEGER`, `source_end_msg_idx INTEGER`. Offsets are integer message indices into `raw_messages` (inclusive start, exclusive end).
 - Migration `005-raw-messages.ts`: new table `raw_messages` indexed by `(session_id, msg_idx)`, append-only. Columns: `session_id TEXT`, `msg_idx INTEGER`, `role TEXT`, `content TEXT`, `created_at INTEGER`. Primary key `(session_id, msg_idx)`.
 - **Retention:** `raw_messages` will grow unbounded — at heavy usage this is multi-GB per year. Add `CORTEX_RAW_RETENTION_DAYS` (default `90`) and a cleanup job that runs on `SessionEnd`: delete raw messages older than the threshold *only* for sessions whose memories have all been promoted to `is_pinned=true` (Milestone 8 introduces this flag — until then, retain all). This trades long-term recall fidelity for disk space and is the right default.
@@ -124,8 +128,15 @@ This milestone depends on the migration system from M0.
 - `apsolut-cortex grep <pattern>` — substring/regex search across memory content + metadata.
 - `apsolut-cortex delete <id>` for single-memory removal. For bulk: `--project <n>`, `--tag <n>`, `--before <YYYY-MM-DD>`, `--grep <pattern>`. **Do not** accept raw SQL via CLI flag — shell-quoting plus arbitrary SQL is a footgun even for solo use. All bulk deletes prompt for confirmation showing affected count, with a `--yes` flag for scripting.
 - **No web dashboard. No localhost server.** Obsidian + dataview is the dashboard.
+- **Compiled views (Karpathy "LLM maintains the wiki, not just dumps to it"):** the export step does not just write one file per memory — it also generates **compiled** views that an LLM or human can navigate:
+  - `obsidian/index.md` (top-level): a generated table of contents grouped by project → category → trust tier, with memory counts and links.
+  - `obsidian/by-category/<category>.md`: one per category (correction, insight, decision, discovery, fact, pattern) — a single denser document listing all memories of that category sorted by weight.
+  - `obsidian/by-project/<project>.md`: per project, similarly grouped.
+  - `obsidian/_health.md`: surfaces things that need attention — contradiction-marked memories, low-trust memories with high `used_count` (under-promoted?), high-trust memories with no access in 60d (stale?), orphan tags.
+  - **Inter-memory `[[wiki-links]]`:** at export time, scan each memory's content for substrings matching other memories' first sentences (cheap heuristic; cost-bounded). Emit `[[<id>]]` links in the body so navigation between related memories works in Obsidian without us building a graph algorithm. Karpathy's wiki gets its value from the link graph, not the individual notes.
+  - The LLM writes the wiki, not the user — every regenerable file gets a `<!-- generated by apsolut-cortex export — do not edit -->` header. User-touched files are detected via a stored content hash and skipped on next regen (with a one-line warning so we don't silently drop their edits).
 
-**Done when:** memories appear as markdown in Obsidian vault on `SessionEnd`, dataview queries work against the frontmatter, three curation commands round-trip to libSQL, and all bulk-delete flags refuse to run without confirmation.
+**Done when:** memories appear as markdown in Obsidian vault on `SessionEnd`, dataview queries work against the frontmatter, `index.md` + per-category + per-project + `_health.md` regenerate on each export, inter-memory `[[wiki-links]]` appear in bodies where content overlap exists, three curation commands round-trip to libSQL, and all bulk-delete flags refuse to run without confirmation.
 
 ### Milestone 6 — In-session compression (Observer + Reflector + PreCompact)
 
@@ -202,13 +213,22 @@ Document the full provider matrix in `docs/PROVIDERS.md`: which env var enables 
 
 **Done when:** the router operates correctly under at least three configurations: (1) Anthropic-only, no Ollama installed, (2) Ollama + Anthropic, (3) OpenAI-only, no Anthropic, no Ollama. All three pass the eval suite within the Milestone 4 thresholds. Provider switching requires only env var changes — zero code changes.
 
-### Milestone 8 — Simplification pass (do last)
+### Milestone 8 — Simplification pass + audit (do last)
 
 **Run `apsolut-cortex backup` before any step in this milestone.** Trust collapse and taxonomy reduction are destructive and not reversible without a snapshot.
 
-- Audit the ~16 `CORTEX_*` env vars (current count). Hard-code 80% to sane defaults. Expose ~5: thresholds, model routing, paths, log level. Document in `docs/CONFIG.md`.
+- Audit the ~16 `APSOLUT_CORTEX_*` env vars (current count). Hard-code 80% to sane defaults. Expose ~5: thresholds, model routing, paths, log level. Document in `docs/CONFIG.md`.
 - Collapse 4-tier trust (`observed → validated → proven → canonical`) to 2 tiers (`active`, `archived`) with `is_pinned` boolean. Migration: `observed`/`validated` → `active`, `proven`/`canonical` → `active` + `is_pinned=true`. Update auto-promotion logic: set `is_pinned` only after **≥3 retrievals AND zero `apsolut-cortex correct` signal within 7 days**. Note this is a heuristic — absence of correction doesn't prove correctness, it just means the user didn't complain. Acceptable until eval signal becomes the primary trust input.
 - After 30 days of eval signal, audit the 5 tiers × 6 categories taxonomy. Anything with <5% of memories — collapse or remove.
+- **`apsolut-cortex audit` command (Karpathy "linting"):** standing hygiene tool, not one-time cleanup. Reports:
+  - **Near-duplicates** — memory pairs with vector cosine > 0.85 that escaped the 0.92 dedup threshold at insert time. Output: id pairs + first 80 chars of each + suggested merge target (higher-weight wins).
+  - **Contradiction candidates** — same project, same category, embedding similarity > 0.6 (related), but one was created within 7 days of another being deleted via `memory_contradict`. Likely we re-learned the wrong thing.
+  - **Orphan tags** — tags applied to fewer than 2 memories. Either rename to a sibling tag or drop.
+  - **Stale high-trust** — `is_pinned` (or `proven`/`canonical` pre-M8) memories with no `last_used` in 90 days and `used_count` < 3. Maybe demote.
+  - **Low-trust high-use** — `observed` memories with `used_count` ≥ 5 that should probably be promoted. Cross-check eval signal before auto-promoting.
+  - Output formats: `--format=table` (human review, default), `--format=jsonl` (machine pipe), `--format=md` (writes to `obsidian/_audit-<date>.md` for in-Obsidian review).
+  - **Read-only by default.** `--apply` flag executes the suggested merges/demotions, with per-category confirmation prompts unless `--yes` is also passed. Karpathy's wiki linting suggests, the human applies — same pattern.
+  - Schedule recommendation in `docs/OPERATIONS.md`: run weekly, no harder requirement.
 
 ---
 

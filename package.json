@@ -1,6 +1,6 @@
 {
   "name": "apsolut-cortex",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Persistent memory for Claude Code projects — stores corrections, decisions, and patterns across sessions",
   "type": "module",
   "bin": {
@@ -10,7 +10,8 @@
     "build": "bun run build.ts",
     "prepublishOnly": "bun run build",
     "dev": "bun run src/cli.ts",
-    "dev:mcp": "bun run src/mcp/server.ts"
+    "dev:mcp": "bun run src/mcp/server.ts",
+    "test": "bun test"
   },
   "files": [
     "dist/",
