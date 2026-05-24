@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] – 2026-05-24
+
+### Added
+- **M5 visibility layer (partial, Phase 2):** `apsolut-cortex export` writes one markdown file per memory to `~/.apsolut-cortex/obsidian/memories/` with full YAML frontmatter (id, project, tier, category, trust, weight, used_count, created_at, last_used, source, source_session_id). Body includes the memory content, optional context section, and `[[wiki-links]]` to the project + category. The vault is regenerated from scratch each time; orphaned `.md` files (memories no longer in the DB) are garbage-collected.
+- **`index.md`** at the vault root: grouped by project → category, sorted by weight within each group, with `[[link]]`s to every memory file. The header marks the vault as generated output.
+- **Auto-export on `SessionEnd`:** the existing session-end hook now calls `exportVault` after compression + decay/prune. Wrapped in its own try/catch so a markdown write failure can't break compression.
+- **`apsolut-cortex export`** CLI command for manual triggers.
+- 4 export tests against an isolated tmp vault dir — file shape, frontmatter, orphan GC, project-filter mode. 34/34 total tests passing.
+
+### Pending in M5 (rolled into a future commit, not blocking 0.10.0)
+- `apsolut-cortex promote` / `demote` / `tag` / `grep` / `delete` CLI commands.
+- Compiled views: per-category pages, per-project pages, `_health.md` for low-trust / contradiction-candidate memories.
+- Inter-memory `[[wiki-links]]` based on content overlap.
+
 ## [0.9.0] – 2026-05-24
 
 ### Added
@@ -124,7 +138,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.2...v0.7.0

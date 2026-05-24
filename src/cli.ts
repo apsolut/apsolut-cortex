@@ -30,6 +30,7 @@ import { embed } from "./embed.js";
 import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
 import { snapshot, listBackups, restore, reencryptToKey, BACKUP_DIR } from "./backup.js";
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
+import { exportVault, OBSIDIAN_DIR } from "./export.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -53,6 +54,7 @@ switch (cmd) {
   case "status":             await status(); break;
   case "migrate":            await migrate(); break;
   case "correct":            await correctCmd(process.argv.slice(3)); break;
+  case "export":             await exportCmd(); break;
   case "backup":             await backupCmd(); break;
   case "restore":            await restoreCmd(process.argv[3], process.argv.slice(4)); break;
   case "db":                 await dbCmd(process.argv[3], process.argv.slice(4)); break;
@@ -75,6 +77,7 @@ switch (cmd) {
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
+  │    export      Export memories to Obsidian vault │
   │    backup      Snapshot the DB                   │
   │    restore     Restore a snapshot                │
   │    db re-encrypt  Migrate DB to encrypted        │
@@ -437,6 +440,18 @@ async function correctCmd(args: string[]) {
   if (!correctionText) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
   }
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+async function exportCmd() {
+  const db = await getDb();
+  const result = await exportVault(db);
+  console.log(`[apsolut-cortex] ✓ Exported ${result.memories_written} memories to ${result.vault_dir}`);
+  if (result.files_removed > 0) {
+    console.log(`[apsolut-cortex]   Removed ${result.files_removed} orphaned .md files (no longer in DB)`);
+  }
+  console.log(`[apsolut-cortex]   Open ${OBSIDIAN_DIR} as an Obsidian vault to browse.`);
 }
 
 // ── Backup / Restore ──────────────────────────────────────────────────────────

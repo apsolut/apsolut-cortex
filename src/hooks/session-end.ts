@@ -26,6 +26,7 @@ import {
 import { compressSession } from "../compress.js";
 import { embed } from "../embed.js";
 import { TRACKED_FILES, CORTEX_CORRECTION_WEIGHT } from "../config.js";
+import { exportVault } from "../export.js";
 
 function hashFile(path: string): string | null {
   try {
@@ -142,6 +143,15 @@ async function main() {
     const { pruned } = await decayAndPrune(db, project.id);
     if (pruned > 0) {
       console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);
+    }
+
+    // Auto-export to the Obsidian vault. Wrapped in its own try so a
+    // markdown write failure cannot break compression (which is the
+    // primary responsibility of this hook).
+    try {
+      await exportVault(db);
+    } catch (e) {
+      console.error(`[apsolut-cortex] export skipped: ${e}`);
     }
   } catch (e) {
     console.error(`[apsolut-cortex] session-end error: ${e}`);
