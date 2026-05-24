@@ -349,6 +349,69 @@ export async function searchBM25(
   return result.rows.map(rowToMemory);
 }
 
+// Stop-words we drop from grep tokenization — same words Karpathy's LLM
+// would ignore when scanning markdown for relevance. Tiny list on purpose;
+// real BM25 has the porter stemmer + IDF, the point of grep is to NOT have
+// those things.
+const GREP_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "does",
+  "for", "from", "have", "how", "i", "in", "is", "it", "of", "on", "or",
+  "our", "such", "that", "the", "this", "to", "use", "was", "we", "what",
+  "when", "where", "which", "why", "with", "you",
+]);
+
+/**
+ * Karpathy-style "LLM reads the markdown" retrieval baseline. Tokenizes
+ * the query into significant words (≥3 chars, stop-words dropped), scores
+ * each memory by how many query tokens appear in its content+context
+ * (case-insensitive), and breaks ties by recency.
+ *
+ * Deliberately stupid — no stemming, no IDF, no embeddings. Exists so the
+ * eval harness can answer: does the hybrid stack actually beat "just look
+ * for the words" at our scale?
+ */
+export async function searchGrep(
+  db: DbConn,
+  projectId: string,
+  query: string,
+  limit: number
+): Promise<Memory[]> {
+  const tokens = query
+    .toLowerCase()
+    .split(/[^a-z0-9_-]+/)
+    .filter((t) => t.length >= 3 && !GREP_STOP_WORDS.has(t));
+
+  if (tokens.length === 0) return [];
+
+  // Pull candidates that match at least one token, then score in JS.
+  const orClauses = tokens
+    .map(() => "(LOWER(content) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(context, '')) LIKE ? ESCAPE '\\')")
+    .join(" OR ");
+  const args: (string | number)[] = [projectId];
+  for (const t of tokens) {
+    const pattern = `%${t.replace(/[%_]/g, "\\$&")}%`;
+    args.push(pattern, pattern);
+  }
+
+  const result = await db.execute({
+    sql: `SELECT * FROM memories
+          WHERE project_id = ? AND (${orClauses})
+          ORDER BY created_at DESC`,
+    args,
+  });
+
+  const scored = result.rows.map((r) => {
+    const m = rowToMemory(r);
+    const hay = `${m.content} ${m.context ?? ""}`.toLowerCase();
+    const score = tokens.reduce((s, t) => s + (hay.includes(t) ? 1 : 0), 0);
+    return { memory: m, score };
+  });
+
+  // Sort by token-overlap desc, then recency desc (already in result order)
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((s) => s.memory);
+}
+
 export async function searchVector(
   db: DbConn,
   projectId: string,

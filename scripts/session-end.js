@@ -420,6 +420,46 @@ async function insertMemory(db, m) {
   }
   return id;
 }
+var GREP_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "do",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "such",
+  "that",
+  "the",
+  "this",
+  "to",
+  "use",
+  "was",
+  "we",
+  "what",
+  "when",
+  "where",
+  "which",
+  "why",
+  "with",
+  "you"
+]);
 async function decayAndPrune(db, projectId) {
   const cutoff = Date.now() - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
   const decayResult = await db.execute({

@@ -16,7 +16,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, existsSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { homedir } from "os";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -68,6 +69,39 @@ const server = new Server(
 );
 
 const TAG = "[apsolut-cortex]";
+
+// Shadow mode — when APSOLUT_CORTEX_SHADOW is truthy, memory_search still
+// runs retrieval but returns no results to Claude. The would-have-been
+// matches are appended to ~/.apsolut-cortex/logs/shadow.jsonl so we can
+// observe retrieval quality without affecting the conversation. Useful
+// when testing a tuning change against a real session before exposing it.
+const SHADOW_MODE = ["true", "1", "yes"].includes(
+  (process.env.APSOLUT_CORTEX_SHADOW ?? "").toLowerCase()
+);
+const SHADOW_LOG_PATH = join(homedir(), ".apsolut-cortex", "logs", "shadow.jsonl");
+
+function shadowLog(entry: {
+  query: string;
+  project_id: string;
+  project_name: string;
+  injected_ids: string[];
+  would_have_injected: Array<{
+    id: string; tier: string; trust: string; weight: number; content: string;
+  }>;
+  latency_ms: number;
+}) {
+  try {
+    const dir = dirname(SHADOW_LOG_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(
+      SHADOW_LOG_PATH,
+      JSON.stringify({ ts: Date.now(), ...entry }) + "\n"
+    );
+  } catch (e) {
+    // Shadow logging must never break the MCP server.
+    console.error(`[apsolut-cortex] shadow log write failed: ${e}`);
+  }
+}
 
 function requireProject(): { id: string; name: string } {
   if (!project?.id) throw new Error(
@@ -222,6 +256,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const tierFilter = args?.tier as MemoryTier | undefined;
         const trustFilter = args?.trust as string | undefined;
 
+        const t0 = Date.now();
         let results = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER);
 
         if (tierFilter) results = results.filter((m) => m.tier === tierFilter);
@@ -234,6 +269,30 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
 
         results = results.slice(0, limit);
+        const latencyMs = Date.now() - t0;
+
+        if (SHADOW_MODE) {
+          shadowLog({
+            query,
+            project_id: p.id,
+            project_name: p.name,
+            injected_ids: [],
+            would_have_injected: results.map((r) => ({
+              id: r.id,
+              tier: r.tier,
+              trust: r.trust,
+              weight: r.weight,
+              content: r.content.slice(0, 200),
+            })),
+            latency_ms: latencyMs,
+          });
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} Shadow mode active — ${results.length} would-be matches logged to ~/.apsolut-cortex/logs/shadow.jsonl (none injected).`,
+            }],
+          };
+        }
 
         if (results.length === 0) {
           return {

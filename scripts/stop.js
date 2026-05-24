@@ -286,6 +286,46 @@ async function insertObservation(db, obs) {
     ]
   });
 }
+var GREP_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "do",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "such",
+  "that",
+  "the",
+  "this",
+  "to",
+  "use",
+  "was",
+  "we",
+  "what",
+  "when",
+  "where",
+  "which",
+  "why",
+  "with",
+  "you"
+]);
 
 // src/privacy.ts
 function stripPrivate(text) {

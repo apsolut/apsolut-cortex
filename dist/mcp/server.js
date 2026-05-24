@@ -8,7 +8,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, existsSync as existsSync2 } from "fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync } from "fs";
+import { homedir as homedir3 } from "os";
 import { join as join3, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -369,6 +370,46 @@ async function searchBM25(db, projectId, query, limit) {
   });
   return result.rows.map(rowToMemory);
 }
+var GREP_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "do",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "such",
+  "that",
+  "the",
+  "this",
+  "to",
+  "use",
+  "was",
+  "we",
+  "what",
+  "when",
+  "where",
+  "which",
+  "why",
+  "with",
+  "you"
+]);
 async function searchVector(db, projectId, queryEmb, limit) {
   const result = await db.execute({
     sql: `SELECT *, vector_distance_cos(embedding, vector(?)) as distance
@@ -469,6 +510,46 @@ var CORTEX_DIR2 = join2(homedir2(), ".apsolut-cortex");
 var DB_PATH2 = join2(CORTEX_DIR2, "memory.db");
 var REGISTRY_PATH2 = join2(CORTEX_DIR2, "registry.json");
 var MODELS_DIR2 = join2(CORTEX_DIR2, "models");
+var GREP_STOP_WORDS2 = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "do",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "such",
+  "that",
+  "the",
+  "this",
+  "to",
+  "use",
+  "was",
+  "we",
+  "what",
+  "when",
+  "where",
+  "which",
+  "why",
+  "with",
+  "you"
+]);
 
 // src/embed.ts
 env.cacheDir = MODELS_DIR2;
@@ -542,6 +623,19 @@ var __mcp_dirname = dirname(fileURLToPath(import.meta.url));
 var PKG_VERSION = JSON.parse(readFileSync(resolve(__mcp_dirname, "..", "..", "package.json"), "utf-8")).version;
 var server = new Server({ name: "apsolut-cortex", version: PKG_VERSION }, { capabilities: { tools: {} } });
 var TAG = "[apsolut-cortex]";
+var SHADOW_MODE = ["true", "1", "yes"].includes((process.env.APSOLUT_CORTEX_SHADOW ?? "").toLowerCase());
+var SHADOW_LOG_PATH = join3(homedir3(), ".apsolut-cortex", "logs", "shadow.jsonl");
+function shadowLog(entry) {
+  try {
+    const dir = dirname(SHADOW_LOG_PATH);
+    if (!existsSync2(dir))
+      mkdirSync2(dir, { recursive: true });
+    appendFileSync(SHADOW_LOG_PATH, JSON.stringify({ ts: Date.now(), ...entry }) + `
+`);
+  } catch (e) {
+    console.error(`[apsolut-cortex] shadow log write failed: ${e}`);
+  }
+}
 function requireProject() {
   if (!project?.id)
     throw new Error("No project found. Run: apsolut-cortex init");
@@ -671,6 +765,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const limit = Math.min(Number(args?.limit ?? 5), CORTEX_SEARCH_LIMIT_MAX2);
         const tierFilter = args?.tier;
         const trustFilter = args?.trust;
+        const t0 = Date.now();
         let results = await hybridSearch(p.id, query, limit * CORTEX_SEARCH_MULTIPLIER2);
         if (tierFilter)
           results = results.filter((m) => m.tier === tierFilter);
@@ -680,6 +775,29 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           results = results.filter((m) => trustOrder.indexOf(m.trust) >= minIdx);
         }
         results = results.slice(0, limit);
+        const latencyMs = Date.now() - t0;
+        if (SHADOW_MODE) {
+          shadowLog({
+            query,
+            project_id: p.id,
+            project_name: p.name,
+            injected_ids: [],
+            would_have_injected: results.map((r) => ({
+              id: r.id,
+              tier: r.tier,
+              trust: r.trust,
+              weight: r.weight,
+              content: r.content.slice(0, 200)
+            })),
+            latency_ms: latencyMs
+          });
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} Shadow mode active \u2014 ${results.length} would-be matches logged to ~/.apsolut-cortex/logs/shadow.jsonl (none injected).`
+            }]
+          };
+        }
         if (results.length === 0) {
           return {
             content: [{

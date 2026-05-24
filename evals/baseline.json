@@ -1,0 +1,92 @@
+{
+  "ran_at": "2026-05-24T19:24:37.793Z",
+  "per_query": [
+    {
+      "id": "g001",
+      "query": "how do I encrypt the database?",
+      "hybrid": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "9cd51c42-1e7b-4a71-a675-110e07c860c9"
+      },
+      "grep": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "9cd51c42-1e7b-4a71-a675-110e07c860c9"
+      }
+    },
+    {
+      "id": "g002",
+      "query": "what folder do we use for cortex data?",
+      "hybrid": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "2cfffd65-d178-49a0-8484-f3187f08eb46"
+      },
+      "grep": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "2cfffd65-d178-49a0-8484-f3187f08eb46"
+      }
+    },
+    {
+      "id": "g003",
+      "query": "how does the test runner work?",
+      "hybrid": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "56de581d-9f62-46f3-82d8-333467b55230"
+      },
+      "grep": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "56de581d-9f62-46f3-82d8-333467b55230"
+      }
+    },
+    {
+      "id": "g004",
+      "query": "why did we switch the transformers package?",
+      "hybrid": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "6ac481b0-3e0d-43c2-9e8e-da13c623d5c3"
+      },
+      "grep": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "6ac481b0-3e0d-43c2-9e8e-da13c623d5c3"
+      }
+    },
+    {
+      "id": "g005",
+      "query": "what is the duplicate detection threshold?",
+      "hybrid": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "dc7f8481-a258-45b3-8fe7-63a7a19e84c2"
+      },
+      "grep": {
+        "hit": true,
+        "rank": 1,
+        "first_match_id": "dc7f8481-a258-45b3-8fe7-63a7a19e84c2"
+      }
+    }
+  ],
+  "aggregate": {
+    "total": 5,
+    "hybrid": {
+      "hits": 5,
+      "hit_rate": 1,
+      "mrr": 1
+    },
+    "grep": {
+      "hits": 5,
+      "hit_rate": 1,
+      "mrr": 1
+    },
+    "delta": {
+      "hit_rate": 0,
+      "mrr": 0
+    }
+  }
+}

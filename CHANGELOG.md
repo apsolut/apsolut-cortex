@@ -7,7 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
-- **M0 pre-flight (Phase 2):** `bun:test` smoke test, migration system (`src/migrations/`, `_migrations` table, runner with transaction-per-migration + advisory lock), `apsolut-cortex migrate` CLI command, `CHANGELOG.md`, `docs/` scaffolding (`OPERATIONS.md`, `STORAGE.md`, `PROVIDERS.md`, `CONFIG.md`, `OLLAMA.md`, `decisions/`).
+- **M1 eval harness (Phase 2):** `evals/` directory with `golden.jsonl` (5 seeded entries, target 30), `evals/fixtures/seed.ts` (reproducible in-memory fixture DB with 10 known memories), `evals/runner.ts` (hit rate + MRR computation), `apsolut-cortex eval run` and `apsolut-cortex eval baseline` CLI subcommands. Each run scores **two** retrievals side-by-side: the production hybrid path and a tokenized-grep baseline. The runner prints a verdict line — if hybrid beats grep by ≥5pp we keep the complexity; if grep matches or wins we have license to simplify in M8. At 5 seeded queries with hand-picked content both score 5/5; the gap will only appear at 20+ entries with more paraphrased queries (per the eval README guidance).
+- **`searchGrep(db, projectId, query, limit)`** in `src/db.ts` — Karpathy "LLM reads the markdown" baseline. Tokenizes the query (≥3 chars, stop-words dropped), scores by token-overlap count, breaks ties by recency.
+- **Shadow mode** in the MCP server: when `APSOLUT_CORTEX_SHADOW=true`, `memory_search` still runs retrieval but returns nothing to Claude. Would-be matches are appended to `~/.apsolut-cortex/logs/shadow.jsonl` for offline analysis. Lets us tune retrieval against real sessions without polluting the conversation.
+
+## [0.5.7] – 2026-05-24
+
+### Added
+- **M0 pre-flight (Phase 2):** `bun:test` smoke test, migration system (`src/migrations/`, `_migrations` table, runner with sentinel-row lock), `apsolut-cortex migrate` CLI command, `CHANGELOG.md`, `docs/` scaffolding (`OPERATIONS.md`, `STORAGE.md`, `PROVIDERS.md`, `CONFIG.md`, `OLLAMA.md`, `decisions/`).
 - **001-initial-schema migration:** existing schema extracted into `src/migrations/001-initial-schema.ts`. Runner detects existing DBs and back-fills the migration row without re-running SQL.
 
 ### Changed
@@ -66,7 +73,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.7...HEAD
+[0.5.7]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.3...v0.5.6
 [0.5.3]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.5.1...v0.5.2

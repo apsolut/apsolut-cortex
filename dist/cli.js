@@ -250,6 +250,46 @@ async function getDb() {
   }
   return _db;
 }
+var GREP_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "do",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "such",
+  "that",
+  "the",
+  "this",
+  "to",
+  "use",
+  "was",
+  "we",
+  "what",
+  "when",
+  "where",
+  "which",
+  "why",
+  "with",
+  "you"
+]);
 
 // src/registry.ts
 function readRegistry() {
@@ -297,6 +337,9 @@ switch (cmd) {
   case "migrate":
     await migrate();
     break;
+  case "eval":
+    await evalCmd(process.argv[3]);
+    break;
   case "uninstall":
     uninstall();
     break;
@@ -326,6 +369,8 @@ switch (cmd) {
   │    init        Set up memory for a project       │
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
+  │    eval run    Run retrieval evals               │
+  │    eval baseline   Snapshot current scores       │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
@@ -567,6 +612,45 @@ async function migrate() {
     if (result.skipped.length > 0) {
       console.log(`[apsolut-cortex]   Skipped ${result.skipped.length} already-applied migration(s)`);
     }
+  }
+}
+async function evalCmd(subcommand) {
+  const evalsRoot = IS_DIST ? join2(PACKAGE_ROOT, "evals") : join2(PACKAGE_ROOT, "evals");
+  const runnerModule = pathToFileURL(join2(evalsRoot, "runner.ts")).href;
+  const {
+    runEvals,
+    formatResult,
+    saveBaseline,
+    loadBaseline,
+    formatComparison
+  } = await import(runnerModule);
+  switch (subcommand) {
+    case "run": {
+      const result = await runEvals();
+      console.log(formatResult(result));
+      const baseline = loadBaseline();
+      if (baseline) {
+        console.log("");
+        console.log(formatComparison(result, baseline));
+      } else {
+        console.log("");
+        console.log("[apsolut-cortex] No baseline on file. Run `apsolut-cortex eval baseline` to snapshot the current scores.");
+      }
+      break;
+    }
+    case "baseline": {
+      const result = await runEvals();
+      saveBaseline(result);
+      console.log(formatResult(result));
+      console.log("");
+      console.log("[apsolut-cortex] ✓ Baseline saved to evals/baseline.json");
+      break;
+    }
+    default:
+      console.log(`[apsolut-cortex] eval — subcommands:`);
+      console.log(`  apsolut-cortex eval run        Run evals and print scores`);
+      console.log(`  apsolut-cortex eval baseline   Snapshot current scores as baseline`);
+      break;
   }
 }
 function uninstall() {
