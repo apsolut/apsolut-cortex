@@ -32,6 +32,7 @@ var CORTEX_BUMP_BOOST = envNum("APSOLUT_CORTEX_BUMP_BOOST", 0.1);
 var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
+var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
 
 // src/migrations/001-initial-schema.ts
 var migration = {
@@ -141,9 +142,53 @@ var migration = {
 };
 var _001_initial_schema_default = migration;
 
+// src/migrations/002-range-linked-memories.ts
+var migration2 = {
+  name: "002-range-linked-memories",
+  async up(client) {
+    const cols = await client.execute("PRAGMA table_info(memories)");
+    const have = new Set(cols.rows.map((r) => r.name));
+    if (!have.has("source_session_id")) {
+      await client.execute("ALTER TABLE memories ADD COLUMN source_session_id TEXT");
+    }
+    if (!have.has("source_start_msg_idx")) {
+      await client.execute("ALTER TABLE memories ADD COLUMN source_start_msg_idx INTEGER");
+    }
+    if (!have.has("source_end_msg_idx")) {
+      await client.execute("ALTER TABLE memories ADD COLUMN source_end_msg_idx INTEGER");
+    }
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_mem_source_session
+       ON memories(source_session_id, source_start_msg_idx)`);
+  }
+};
+var _002_range_linked_memories_default = migration2;
+
+// src/migrations/003-raw-messages.ts
+var migration3 = {
+  name: "003-raw-messages",
+  async up(client) {
+    await client.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS raw_messages (
+        session_id  TEXT NOT NULL,
+        msg_idx     INTEGER NOT NULL,
+        role        TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (session_id, msg_idx)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_raw_session_time
+        ON raw_messages(session_id, created_at);
+    `);
+  }
+};
+var _003_raw_messages_default = migration3;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
-  _001_initial_schema_default
+  _001_initial_schema_default,
+  _002_range_linked_memories_default,
+  _003_raw_messages_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {

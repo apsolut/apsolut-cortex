@@ -87,6 +87,11 @@ function rowToMemory(r: Row): Memory {
     session_id: r.session_id as string | null,
     flagged: r.flagged as number,
     flag_reason: r.flag_reason as string | null,
+    // M4 columns — present if migration 002 has been applied. Treat
+    // missing keys as null so rowToMemory is safe to call on pre-M4 rows.
+    source_session_id: (r.source_session_id as string | null) ?? null,
+    source_start_msg_idx: (r.source_start_msg_idx as number | null) ?? null,
+    source_end_msg_idx: (r.source_end_msg_idx as number | null) ?? null,
   };
 }
 
@@ -126,6 +131,19 @@ export interface Memory {
   session_id: string | null;
   flagged: number;
   flag_reason: string | null;
+  // M4 — back-pointer into raw_messages. NULL for memories that pre-date
+  // M4 or were stored via memory_store without source context.
+  source_session_id: string | null;
+  source_start_msg_idx: number | null;
+  source_end_msg_idx: number | null;
+}
+
+export interface RawMessage {
+  session_id: string;
+  msg_idx: number;
+  role: string;
+  content: string;
+  created_at: number;
 }
 
 export interface ProjectRecord {
@@ -315,37 +333,128 @@ export async function insertMemory(
     project_id: string; tier: string; category: string; trust: string;
     content: string; context: string | null; source: string;
     embedding: Float32Array | null; weight: number; session_id: string | null;
+    // Optional M4 source range — when the memory was derived from a
+    // specific slice of raw_messages, callers (compression hook) can
+    // record the back-pointer so memory_recall can retrieve the source.
+    source_session_id?: string | null;
+    source_start_msg_idx?: number | null;
+    source_end_msg_idx?: number | null;
   }
 ): Promise<string> {
   const id = crypto.randomUUID();
+  const srcSession = m.source_session_id ?? null;
+  const srcStart = m.source_start_msg_idx ?? null;
+  const srcEnd = m.source_end_msg_idx ?? null;
+
   if (m.embedding) {
     await db.execute({
       sql: `INSERT INTO memories
               (id, project_id, tier, category, trust, content, context,
-               source, embedding, weight, used_count, created_at, session_id)
+               source, embedding, weight, used_count, created_at, session_id,
+               source_session_id, source_start_msg_idx, source_end_msg_idx)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, vector(?), ?, 0, ?, ?)`,
+              (?, ?, ?, ?, ?, ?, ?, ?, vector(?), ?, 0, ?, ?, ?, ?, ?)`,
       args: [
         id, m.project_id, m.tier, m.category, m.trust,
         m.content, m.context ?? null, m.source,
         vecToSql(m.embedding), m.weight, Date.now(), m.session_id ?? null,
+        srcSession, srcStart, srcEnd,
       ],
     });
   } else {
     await db.execute({
       sql: `INSERT INTO memories
               (id, project_id, tier, category, trust, content, context,
-               source, embedding, weight, used_count, created_at, session_id)
+               source, embedding, weight, used_count, created_at, session_id,
+               source_session_id, source_start_msg_idx, source_end_msg_idx)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+              (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, ?, ?, ?)`,
       args: [
         id, m.project_id, m.tier, m.category, m.trust,
         m.content, m.context ?? null, m.source,
         m.weight, Date.now(), m.session_id ?? null,
+        srcSession, srcStart, srcEnd,
       ],
     });
   }
   return id;
+}
+
+// ── Raw messages (M4 — back-pointer source for compressed memories) ──────────
+
+/**
+ * Append a raw conversation message to raw_messages. Uses INSERT OR
+ * IGNORE so callers can replay safely without unique-constraint errors.
+ */
+export async function insertRawMessage(
+  db: DbConn,
+  m: RawMessage
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO raw_messages
+            (session_id, msg_idx, role, content, created_at)
+          VALUES (?, ?, ?, ?, ?)`,
+    args: [m.session_id, m.msg_idx, m.role, m.content, m.created_at],
+  });
+}
+
+/**
+ * Fetch a [startIdx, endIdx) slice of a session's raw messages,
+ * ordered by msg_idx. Returns empty array if no rows match — caller
+ * should treat this as "source was pruned or never recorded."
+ */
+export async function getRawRange(
+  db: DbConn,
+  sessionId: string,
+  startIdx: number,
+  endIdx: number
+): Promise<RawMessage[]> {
+  const result = await db.execute({
+    sql: `SELECT session_id, msg_idx, role, content, created_at
+          FROM raw_messages
+          WHERE session_id = ? AND msg_idx >= ? AND msg_idx < ?
+          ORDER BY msg_idx`,
+    args: [sessionId, startIdx, endIdx],
+  });
+  return result.rows.map((r) => ({
+    session_id: r.session_id as string,
+    msg_idx: r.msg_idx as number,
+    role: r.role as string,
+    content: r.content as string,
+    created_at: r.created_at as number,
+  }));
+}
+
+/**
+ * Look up a memory by id and return both the memory and its raw range
+ * (if any). Used by the memory_recall MCP tool.
+ */
+export async function getMemoryWithRange(
+  db: DbConn,
+  memoryId: string
+): Promise<{ memory: Memory; rawMessages: RawMessage[] } | null> {
+  const result = await db.execute({
+    sql: "SELECT * FROM memories WHERE id = ?",
+    args: [memoryId],
+  });
+  if (result.rows.length === 0) return null;
+  const memory = rowToMemory(result.rows[0]);
+
+  if (
+    memory.source_session_id === null ||
+    memory.source_start_msg_idx === null ||
+    memory.source_end_msg_idx === null
+  ) {
+    return { memory, rawMessages: [] };
+  }
+
+  const rawMessages = await getRawRange(
+    db,
+    memory.source_session_id,
+    memory.source_start_msg_idx,
+    memory.source_end_msg_idx
+  );
+  return { memory, rawMessages };
 }
 
 export async function searchBM25(

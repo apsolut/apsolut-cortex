@@ -68,6 +68,16 @@ export const CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT
 /** Initial weight for manually stored memories. */
 export const CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 
+// ── Raw message retention (M4) ──────────────────────────────────────────────
+
+/**
+ * Days to keep rows in raw_messages before cleanup. The cleanup job runs
+ * on SessionEnd and only deletes raw rows whose memories have been
+ * promoted to is_pinned=true (introduced in M8). Until M8, all rows are
+ * retained regardless of this value.
+ */
+export const CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+
 // ── Tracked Config Files ────────────────────────────────────────────────────
 
 export const TRACKED_FILES = [

@@ -30,6 +30,7 @@ import {
   applyMMR,
   findDuplicate,
   bumpWeight,
+  getMemoryWithRange,
   type MemoryTier,
   type MemoryCategory,
   type Memory,
@@ -227,6 +228,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {},
         required: [],
+      },
+    },
+    {
+      name: "memory_recall",
+      description:
+        "Fetch the raw conversation slice that a compressed memory was derived from. Use when a memory is ambiguous or you need the exact wording, tool output, or chronology that compression removed. Returns the raw messages, or a clear message if the memory predates source-range tracking or its raw window has been pruned.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Memory ID from memory_search" },
+        },
+        required: ["id"],
       },
     },
   ],
@@ -447,6 +460,51 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             text: correction
               ? `${TAG} Deleted wrong memory ${id}. Stored correction as ${newId}.`
               : `${TAG} Deleted wrong memory ${id}.`,
+          }],
+        };
+      }
+
+      case "memory_recall": {
+        const id = String(args?.id ?? "");
+        if (!id) {
+          return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
+        }
+
+        const result = await getMemoryWithRange(db, id);
+        if (!result) {
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} No memory found with id "${id}".`,
+            }],
+          };
+        }
+
+        const { memory, rawMessages } = result;
+        if (memory.source_session_id === null) {
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} Memory ${id} has no source range. It either predates M4 (range-linked memories) or was stored manually without a session context. Memory content:\n\n${memory.content}`,
+            }],
+          };
+        }
+        if (rawMessages.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} Memory ${id} points at session ${memory.source_session_id} messages [${memory.source_start_msg_idx}, ${memory.source_end_msg_idx}), but no raw messages were found at that range. They may have been pruned by retention policy. Memory content:\n\n${memory.content}`,
+            }],
+          };
+        }
+
+        const transcript = rawMessages
+          .map((m) => `[${m.msg_idx}] ${m.role}: ${m.content}`)
+          .join("\n\n");
+        return {
+          content: [{
+            type: "text",
+            text: `${TAG} Raw source for memory ${id}\nSession: ${memory.source_session_id}  Range: [${memory.source_start_msg_idx}, ${memory.source_end_msg_idx})  ${rawMessages.length} messages\n\nCompressed memory:\n  ${memory.content}\n\nRaw transcript:\n${transcript}`,
           }],
         };
       }

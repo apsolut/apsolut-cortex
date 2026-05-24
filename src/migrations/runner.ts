@@ -14,6 +14,8 @@
 
 import type { Client } from "@libsql/client";
 import initialSchema from "./001-initial-schema.js";
+import rangeLinkedMemories from "./002-range-linked-memories.js";
+import rawMessages from "./003-raw-messages.js";
 
 export interface Migration {
   name: string;
@@ -24,6 +26,8 @@ export interface Migration {
 /** Registered migrations, applied in array order. Add new ones at the end. */
 export const MIGRATIONS: Migration[] = [
   initialSchema,
+  rangeLinkedMemories,
+  rawMessages,
 ];
 
 const LOCK_TIMEOUT_MS = 30_000;

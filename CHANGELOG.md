@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] – 2026-05-24
+
+### Added
+- **M4 range-linked memories (Phase 2):** two new migrations and a new MCP tool let compressed memories point back at the raw conversation slice they were derived from.
+  - Migration 002 adds nullable `source_session_id`, `source_start_msg_idx`, `source_end_msg_idx` columns to `memories` + a `(source_session_id, source_start_msg_idx)` index. PRAGMA check before each ADD COLUMN so re-runs are no-ops.
+  - Migration 003 creates `raw_messages(session_id, msg_idx, role, content, created_at)` with composite primary key + `(session_id, created_at)` index. Append-only.
+  - `insertMemory()` accepts optional `source_session_id` / `source_start_msg_idx` / `source_end_msg_idx`. Existing call sites unchanged (defaults to NULL).
+  - `insertRawMessage()`, `getRawRange()`, `getMemoryWithRange()` helpers added to `src/db.ts`.
+  - New MCP tool `memory_recall(id)` — returns the raw transcript slice for a memory, or a clear message if the memory predates M4 (NULL ranges) or the raw window was pruned by retention.
+- `APSOLUT_CORTEX_RAW_RETENTION_DAYS` env var (default 90) documented in `src/config.ts`. The cleanup job lands with M8's `is_pinned` work; until then all raw_messages rows are retained.
+
 ## [0.8.0] – 2026-05-24
 
 ### Added
@@ -113,7 +124,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.1...v0.6.2

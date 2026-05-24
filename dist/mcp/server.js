@@ -42,6 +42,7 @@ var CORTEX_BUMP_BOOST = envNum("APSOLUT_CORTEX_BUMP_BOOST", 0.1);
 var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
+var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
 
 // src/migrations/001-initial-schema.ts
 var migration = {
@@ -151,9 +152,53 @@ var migration = {
 };
 var _001_initial_schema_default = migration;
 
+// src/migrations/002-range-linked-memories.ts
+var migration2 = {
+  name: "002-range-linked-memories",
+  async up(client) {
+    const cols = await client.execute("PRAGMA table_info(memories)");
+    const have = new Set(cols.rows.map((r) => r.name));
+    if (!have.has("source_session_id")) {
+      await client.execute("ALTER TABLE memories ADD COLUMN source_session_id TEXT");
+    }
+    if (!have.has("source_start_msg_idx")) {
+      await client.execute("ALTER TABLE memories ADD COLUMN source_start_msg_idx INTEGER");
+    }
+    if (!have.has("source_end_msg_idx")) {
+      await client.execute("ALTER TABLE memories ADD COLUMN source_end_msg_idx INTEGER");
+    }
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_mem_source_session
+       ON memories(source_session_id, source_start_msg_idx)`);
+  }
+};
+var _002_range_linked_memories_default = migration2;
+
+// src/migrations/003-raw-messages.ts
+var migration3 = {
+  name: "003-raw-messages",
+  async up(client) {
+    await client.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS raw_messages (
+        session_id  TEXT NOT NULL,
+        msg_idx     INTEGER NOT NULL,
+        role        TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (session_id, msg_idx)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_raw_session_time
+        ON raw_messages(session_id, created_at);
+    `);
+  }
+};
+var _003_raw_messages_default = migration3;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
-  _001_initial_schema_default
+  _001_initial_schema_default,
+  _002_range_linked_memories_default,
+  _003_raw_messages_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -290,7 +335,10 @@ function rowToMemory(r) {
     created_at: r.created_at,
     session_id: r.session_id,
     flagged: r.flagged,
-    flag_reason: r.flag_reason
+    flag_reason: r.flag_reason,
+    source_session_id: r.source_session_id ?? null,
+    source_start_msg_idx: r.source_start_msg_idx ?? null,
+    source_end_msg_idx: r.source_end_msg_idx ?? null
   };
 }
 async function upsertProject(db, project) {
@@ -336,13 +384,17 @@ async function bumpWeight(db, id, boost = CORTEX_BUMP_BOOST) {
 }
 async function insertMemory(db, m) {
   const id = crypto.randomUUID();
+  const srcSession = m.source_session_id ?? null;
+  const srcStart = m.source_start_msg_idx ?? null;
+  const srcEnd = m.source_end_msg_idx ?? null;
   if (m.embedding) {
     await db.execute({
       sql: `INSERT INTO memories
               (id, project_id, tier, category, trust, content, context,
-               source, embedding, weight, used_count, created_at, session_id)
+               source, embedding, weight, used_count, created_at, session_id,
+               source_session_id, source_start_msg_idx, source_end_msg_idx)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, vector(?), ?, 0, ?, ?)`,
+              (?, ?, ?, ?, ?, ?, ?, ?, vector(?), ?, 0, ?, ?, ?, ?, ?)`,
       args: [
         id,
         m.project_id,
@@ -355,16 +407,20 @@ async function insertMemory(db, m) {
         vecToSql(m.embedding),
         m.weight,
         Date.now(),
-        m.session_id ?? null
+        m.session_id ?? null,
+        srcSession,
+        srcStart,
+        srcEnd
       ]
     });
   } else {
     await db.execute({
       sql: `INSERT INTO memories
               (id, project_id, tier, category, trust, content, context,
-               source, embedding, weight, used_count, created_at, session_id)
+               source, embedding, weight, used_count, created_at, session_id,
+               source_session_id, source_start_msg_idx, source_end_msg_idx)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+              (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, ?, ?, ?)`,
       args: [
         id,
         m.project_id,
@@ -376,11 +432,44 @@ async function insertMemory(db, m) {
         m.source,
         m.weight,
         Date.now(),
-        m.session_id ?? null
+        m.session_id ?? null,
+        srcSession,
+        srcStart,
+        srcEnd
       ]
     });
   }
   return id;
+}
+async function getRawRange(db, sessionId, startIdx, endIdx) {
+  const result = await db.execute({
+    sql: `SELECT session_id, msg_idx, role, content, created_at
+          FROM raw_messages
+          WHERE session_id = ? AND msg_idx >= ? AND msg_idx < ?
+          ORDER BY msg_idx`,
+    args: [sessionId, startIdx, endIdx]
+  });
+  return result.rows.map((r) => ({
+    session_id: r.session_id,
+    msg_idx: r.msg_idx,
+    role: r.role,
+    content: r.content,
+    created_at: r.created_at
+  }));
+}
+async function getMemoryWithRange(db, memoryId) {
+  const result = await db.execute({
+    sql: "SELECT * FROM memories WHERE id = ?",
+    args: [memoryId]
+  });
+  if (result.rows.length === 0)
+    return null;
+  const memory = rowToMemory(result.rows[0]);
+  if (memory.source_session_id === null || memory.source_start_msg_idx === null || memory.source_end_msg_idx === null) {
+    return { memory, rawMessages: [] };
+  }
+  const rawMessages = await getRawRange(db, memory.source_session_id, memory.source_start_msg_idx, memory.source_end_msg_idx);
+  return { memory, rawMessages };
 }
 async function searchBM25(db, projectId, query, limit) {
   const escaped = `"${query.replace(/"/g, '""')}"`;
@@ -628,6 +717,7 @@ var CORTEX_BUMP_BOOST2 = envNum2("APSOLUT_CORTEX_BUMP_BOOST", 0.1);
 var CORTEX_WEIGHT_CAP2 = envNum2("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT2 = envNum2("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT2 = envNum2("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
+var CORTEX_RAW_RETENTION_DAYS2 = envNum2("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
 
 // src/logs.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync } from "fs";
@@ -795,6 +885,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {},
         required: []
+      }
+    },
+    {
+      name: "memory_recall",
+      description: "Fetch the raw conversation slice that a compressed memory was derived from. Use when a memory is ambiguous or you need the exact wording, tool output, or chronology that compression removed. Returns the raw messages, or a clear message if the memory predates source-range tracking or its raw window has been pruned.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Memory ID from memory_search" }
+        },
+        required: ["id"]
       }
     }
   ]
@@ -983,6 +1084,58 @@ ${tier}/${category}: ${content}`
           content: [{
             type: "text",
             text: correction ? `${TAG} Deleted wrong memory ${id}. Stored correction as ${newId}.` : `${TAG} Deleted wrong memory ${id}.`
+          }]
+        };
+      }
+      case "memory_recall": {
+        const id = String(args?.id ?? "");
+        if (!id) {
+          return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
+        }
+        const result = await getMemoryWithRange(db, id);
+        if (!result) {
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} No memory found with id "${id}".`
+            }]
+          };
+        }
+        const { memory, rawMessages } = result;
+        if (memory.source_session_id === null) {
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} Memory ${id} has no source range. It either predates M4 (range-linked memories) or was stored manually without a session context. Memory content:
+
+${memory.content}`
+            }]
+          };
+        }
+        if (rawMessages.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `${TAG} Memory ${id} points at session ${memory.source_session_id} messages [${memory.source_start_msg_idx}, ${memory.source_end_msg_idx}), but no raw messages were found at that range. They may have been pruned by retention policy. Memory content:
+
+${memory.content}`
+            }]
+          };
+        }
+        const transcript = rawMessages.map((m) => `[${m.msg_idx}] ${m.role}: ${m.content}`).join(`
+
+`);
+        return {
+          content: [{
+            type: "text",
+            text: `${TAG} Raw source for memory ${id}
+Session: ${memory.source_session_id}  Range: [${memory.source_start_msg_idx}, ${memory.source_end_msg_idx})  ${rawMessages.length} messages
+
+Compressed memory:
+  ${memory.content}
+
+Raw transcript:
+${transcript}`
           }]
         };
       }
