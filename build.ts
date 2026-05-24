@@ -16,6 +16,7 @@ const external = [
   "@libsql/client",
   "@anthropic-ai/sdk",
   "@modelcontextprotocol/sdk",
+  "@napi-rs/keyring",
 ];
 
 const externalFlags = external.flatMap(p => ["--external", p]);

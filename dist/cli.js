@@ -2,13 +2,13 @@
 
 // src/cli.ts
 import {
-  existsSync as existsSync4,
-  mkdirSync as mkdirSync4,
+  existsSync as existsSync5,
+  mkdirSync as mkdirSync5,
   readFileSync as readFileSync3,
   rmSync,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join3, resolve, dirname as dirname3 } from "path";
+import { join as join4, resolve, dirname as dirname3 } from "path";
 import { homedir as homedir3 } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 
@@ -227,6 +227,31 @@ async function releaseLock(client) {
   await client.execute("DELETE FROM _migrations_lock WHERE id = 1");
 }
 
+// src/keyring.ts
+import { Entry } from "@napi-rs/keyring";
+import { randomBytes } from "crypto";
+var KEYRING_SERVICE = "apsolut-cortex";
+var KEYRING_ACCOUNT_DB_KEY = "db-encryption-key";
+function getDbKey(service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
+  const entry = new Entry(service, account);
+  try {
+    return entry.getPassword();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message.toLowerCase() : String(e);
+    if (msg.includes("not found") || msg.includes("no matching") || msg.includes("does not exist") || msg.includes("the specified item could not be found")) {
+      return null;
+    }
+    throw new Error(`[apsolut-cortex] keychain read failed (${service}/${account}): ${e}`);
+  }
+}
+function setDbKey(key, service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
+  const entry = new Entry(service, account);
+  entry.setPassword(key);
+}
+function generateDbKey() {
+  return randomBytes(32).toString("hex");
+}
+
 // src/db.ts
 var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
@@ -242,7 +267,14 @@ async function getDb() {
   if (!existsSync(MODELS_DIR))
     mkdirSync(MODELS_DIR, { recursive: true });
   if (!_db) {
-    _db = createClient({ url: `file:${DB_PATH}` });
+    let key = null;
+    try {
+      key = getDbKey();
+    } catch (e) {
+      process.stderr.write(`[apsolut-cortex] keychain unreachable; opening DB without encryption. (${e})
+`);
+    }
+    _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
   }
   if (!_initialized) {
     await runMigrations(_db);
@@ -420,17 +452,197 @@ async function embed(text) {
   return out.data;
 }
 
+// src/backup.ts
+import {
+  copyFileSync,
+  existsSync as existsSync4,
+  mkdirSync as mkdirSync4,
+  readdirSync,
+  renameSync as renameSync2,
+  statSync,
+  unlinkSync
+} from "fs";
+import { join as join3 } from "path";
+import { createClient as createClient2 } from "@libsql/client";
+async function unlinkRetry(path, attempts = 10) {
+  for (let i = 0;i < attempts; i++) {
+    try {
+      unlinkSync(path);
+      return;
+    } catch (e) {
+      const code = e.code;
+      if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOENT")
+        throw e;
+      if (code === "ENOENT")
+        return;
+      await new Promise((r) => setTimeout(r, 25 + i * 25));
+    }
+  }
+  unlinkSync(path);
+}
+async function renameRetry(from, to, attempts = 10) {
+  for (let i = 0;i < attempts; i++) {
+    try {
+      renameSync2(from, to);
+      return;
+    } catch (e) {
+      const code = e.code;
+      if (code !== "EBUSY" && code !== "EPERM")
+        throw e;
+      await new Promise((r) => setTimeout(r, 25 + i * 25));
+    }
+  }
+  renameSync2(from, to);
+}
+var BACKUP_DIR = join3(CORTEX_DIR, "backup");
+function timestamp() {
+  const d = new Date;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+function ensureBackupDir() {
+  if (!existsSync4(BACKUP_DIR))
+    mkdirSync4(BACKUP_DIR, { recursive: true });
+}
+function snapshot(label = "manual") {
+  if (!existsSync4(DB_PATH)) {
+    throw new Error(`[apsolut-cortex] no DB at ${DB_PATH} — nothing to back up`);
+  }
+  ensureBackupDir();
+  const dest = join3(BACKUP_DIR, `${label}-${timestamp()}.db`);
+  copyFileSync(DB_PATH, dest);
+  return dest;
+}
+function listBackups() {
+  if (!existsSync4(BACKUP_DIR))
+    return [];
+  return readdirSync(BACKUP_DIR).filter((f) => f.endsWith(".db")).map((f) => {
+    const path = join3(BACKUP_DIR, f);
+    const s = statSync(path);
+    return { path, bytes: s.size, mtime: s.mtime };
+  }).sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+}
+function restore(snapshotPath) {
+  if (!existsSync4(snapshotPath)) {
+    throw new Error(`[apsolut-cortex] snapshot not found: ${snapshotPath}`);
+  }
+  let safetyBackup = null;
+  if (existsSync4(DB_PATH)) {
+    safetyBackup = snapshot("pre-restore");
+  }
+  const tmp = `${DB_PATH}.restoring`;
+  copyFileSync(snapshotPath, tmp);
+  for (const ext of ["-wal", "-shm"]) {
+    const sidecar = `${DB_PATH}${ext}`;
+    if (existsSync4(sidecar)) {
+      try {
+        unlinkSync(sidecar);
+      } catch {}
+    }
+  }
+  if (existsSync4(DB_PATH)) {
+    let attempts = 0;
+    while (existsSync4(DB_PATH) && attempts < 10) {
+      try {
+        unlinkSync(DB_PATH);
+        break;
+      } catch {
+        attempts++;
+      }
+      const deadline = Date.now() + 25 + attempts * 25;
+      while (Date.now() < deadline) {}
+    }
+  }
+  renameSync2(tmp, DB_PATH);
+  return { restored: snapshotPath, safetyBackup };
+}
+var COPY_TABLES = [
+  "projects",
+  "sessions",
+  "observations",
+  "memories",
+  "file_hashes"
+];
+async function copyTable(src, dst, table) {
+  const rows = await src.execute(`SELECT * FROM ${table}`);
+  if (rows.rows.length === 0)
+    return 0;
+  const columns = rows.columns;
+  const placeholders = columns.map(() => "?").join(", ");
+  const sql = `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
+  await dst.batch(rows.rows.map((r) => ({
+    sql,
+    args: columns.map((c) => r[c])
+  })), "write");
+  return rows.rows.length;
+}
+async function reencryptPathToKey(sourcePath, encryptionKey) {
+  if (!existsSync4(sourcePath)) {
+    throw new Error(`[apsolut-cortex] no DB at ${sourcePath} — cannot re-encrypt`);
+  }
+  const newPath = `${sourcePath}.new`;
+  if (existsSync4(newPath))
+    unlinkSync(newPath);
+  const src = createClient2({ url: `file:${sourcePath}` });
+  let dst = null;
+  const rowsCopied = {};
+  try {
+    dst = createClient2({ url: `file:${newPath}`, encryptionKey });
+    await runMigrations(dst);
+    for (const table of COPY_TABLES) {
+      rowsCopied[table] = await copyTable(src, dst, table);
+    }
+  } catch (err) {
+    if (dst) {
+      try {
+        dst.close();
+      } catch {}
+    }
+    try {
+      src.close();
+    } catch {}
+    if (existsSync4(newPath)) {
+      try {
+        unlinkSync(newPath);
+      } catch {}
+    }
+    throw new Error(`[apsolut-cortex] re-encryption failed before swap; original untouched. Cause: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    dst.close();
+  } catch {}
+  try {
+    src.close();
+  } catch {}
+  for (const ext of ["-wal", "-shm"]) {
+    const sidecar = `${sourcePath}${ext}`;
+    if (existsSync4(sidecar)) {
+      try {
+        await unlinkRetry(sidecar);
+      } catch {}
+    }
+  }
+  await unlinkRetry(sourcePath);
+  await renameRetry(newPath, sourcePath);
+  return { rows_copied: rowsCopied, new_path: sourcePath };
+}
+async function reencryptToKey(encryptionKey) {
+  const sourceBackup = snapshot("pre-encrypt");
+  const { rows_copied } = await reencryptPathToKey(DB_PATH, encryptionKey);
+  return { source_backup: sourceBackup, rows_copied, new_db_path: DB_PATH };
+}
+
 // src/cli.ts
 var __filename2 = fileURLToPath(import.meta.url);
 var __dirname2 = dirname3(__filename2);
 var PACKAGE_ROOT = resolve(__dirname2, "..");
 var IS_DIST = __dirname2.endsWith("dist") || __dirname2.includes(`${process.sep}dist${process.sep}`);
-var PKG_VERSION = JSON.parse(readFileSync3(join3(PACKAGE_ROOT, "package.json"), "utf-8")).version;
+var PKG_VERSION = JSON.parse(readFileSync3(join4(PACKAGE_ROOT, "package.json"), "utf-8")).version;
 var PROJECT_ROOT = process.cwd();
-var CLAUDE_SETTINGS = join3(homedir3(), ".claude", "settings.json");
-var MCP_JSON = join3(PROJECT_ROOT, ".mcp.json");
-var PROJECT_APSOLUT = join3(PROJECT_ROOT, ".apsolut-cortex");
-var PROJECT_CONFIG = join3(PROJECT_APSOLUT, "project.json");
+var CLAUDE_SETTINGS = join4(homedir3(), ".claude", "settings.json");
+var MCP_JSON = join4(PROJECT_ROOT, ".mcp.json");
+var PROJECT_APSOLUT = join4(PROJECT_ROOT, ".apsolut-cortex");
+var PROJECT_CONFIG = join4(PROJECT_APSOLUT, "project.json");
 var cmd = process.argv[2];
 switch (cmd) {
   case "init":
@@ -444,6 +656,15 @@ switch (cmd) {
     break;
   case "correct":
     await correctCmd(process.argv.slice(3));
+    break;
+  case "backup":
+    await backupCmd();
+    break;
+  case "restore":
+    await restoreCmd(process.argv[3], process.argv.slice(4));
+    break;
+  case "db":
+    await dbCmd(process.argv[3], process.argv.slice(4));
     break;
   case "eval":
     await evalCmd(process.argv[3]);
@@ -478,6 +699,9 @@ switch (cmd) {
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
+  │    backup      Snapshot the DB                   │
+  │    restore     Restore a snapshot                │
+  │    db re-encrypt  Migrate DB to encrypted        │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
@@ -487,8 +711,8 @@ switch (cmd) {
 `);
 }
 async function runHook(name) {
-  const hookPath = IS_DIST ? join3(PACKAGE_ROOT, "scripts", `${name}.js`) : join3(__dirname2, "hooks", `${name}.ts`);
-  if (!existsSync4(hookPath)) {
+  const hookPath = IS_DIST ? join4(PACKAGE_ROOT, "scripts", `${name}.js`) : join4(__dirname2, "hooks", `${name}.ts`);
+  if (!existsSync5(hookPath)) {
     process.stderr.write(`[apsolut-cortex] hook not found: ${hookPath}
 `);
     process.exit(0);
@@ -499,12 +723,12 @@ async function init() {
   console.log(`
 [apsolut-cortex] init
 `);
-  if (!existsSync4(PROJECT_APSOLUT)) {
-    mkdirSync4(PROJECT_APSOLUT, { recursive: true });
+  if (!existsSync5(PROJECT_APSOLUT)) {
+    mkdirSync5(PROJECT_APSOLUT, { recursive: true });
   }
   let projectId;
   let projectName;
-  if (existsSync4(PROJECT_CONFIG)) {
+  if (existsSync5(PROJECT_CONFIG)) {
     const existing = JSON.parse(readFileSync3(PROJECT_CONFIG, "utf-8"));
     projectId = existing.id;
     projectName = existing.name;
@@ -523,11 +747,11 @@ async function init() {
   }
   registerProject(projectId, projectName, PROJECT_ROOT);
   console.log(`[apsolut-cortex] ✓ Registered in ~/.apsolut-cortex/registry.json`);
-  const mcpServerPath = IS_DIST ? join3(__dirname2, "mcp", "server.js") : join3(__dirname2, "mcp", "server.ts");
+  const mcpServerPath = IS_DIST ? join4(__dirname2, "mcp", "server.js") : join4(__dirname2, "mcp", "server.ts");
   const mcpCommand = IS_DIST ? "node" : "bun";
   const mcpArgs = [mcpServerPath];
   let mcp = {};
-  if (existsSync4(MCP_JSON)) {
+  if (existsSync5(MCP_JSON)) {
     try {
       mcp = JSON.parse(readFileSync3(MCP_JSON, "utf-8"));
     } catch {}
@@ -541,7 +765,7 @@ async function init() {
   mcp.mcpServers = servers;
   writeFileSync2(MCP_JSON, JSON.stringify(mcp, null, 2));
   console.log(`[apsolut-cortex] ✓ Written .mcp.json`);
-  const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join3(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
+  const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join4(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
   const hookEntries = {
     SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
     PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use` }] }],
@@ -550,9 +774,9 @@ async function init() {
   };
   let settings = {};
   const settingsDir = dirname3(CLAUDE_SETTINGS);
-  if (!existsSync4(settingsDir))
-    mkdirSync4(settingsDir, { recursive: true });
-  if (existsSync4(CLAUDE_SETTINGS)) {
+  if (!existsSync5(settingsDir))
+    mkdirSync5(settingsDir, { recursive: true });
+  if (existsSync5(CLAUDE_SETTINGS)) {
     try {
       settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
     } catch {}
@@ -578,38 +802,38 @@ async function init() {
   writeFileSync2(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
   console.log(added > 0 ? `[apsolut-cortex] ✓ Registered ${added} hooks in ~/.claude/settings.json` : `[apsolut-cortex] ✓ Hooks already registered`);
   const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget"];
-  const skillsSource = join3(PACKAGE_ROOT, "skills");
-  const skillsTarget = join3(homedir3(), ".claude", "skills");
-  if (!existsSync4(skillsTarget))
-    mkdirSync4(skillsTarget, { recursive: true });
+  const skillsSource = join4(PACKAGE_ROOT, "skills");
+  const skillsTarget = join4(homedir3(), ".claude", "skills");
+  if (!existsSync5(skillsTarget))
+    mkdirSync5(skillsTarget, { recursive: true });
   const OLD_SKILL_NAMES = ["remember", "store", "status", "forget"];
   for (const old of OLD_SKILL_NAMES) {
-    const oldSkill = join3(skillsTarget, old, "SKILL.md");
-    if (existsSync4(oldSkill)) {
+    const oldSkill = join4(skillsTarget, old, "SKILL.md");
+    if (existsSync5(oldSkill)) {
       const content = readFileSync3(oldSkill, "utf-8");
       if (content.includes("memory_")) {
-        rmSync(join3(skillsTarget, old), { recursive: true, force: true });
+        rmSync(join4(skillsTarget, old), { recursive: true, force: true });
       }
     }
   }
   let skillsCopied = 0;
   for (const name of SKILL_NAMES) {
-    const src = join3(skillsSource, name, "SKILL.md");
-    const destDir = join3(skillsTarget, name);
-    const dest = join3(destDir, "SKILL.md");
-    if (!existsSync4(src))
+    const src = join4(skillsSource, name, "SKILL.md");
+    const destDir = join4(skillsTarget, name);
+    const dest = join4(destDir, "SKILL.md");
+    if (!existsSync5(src))
       continue;
     const srcContent = readFileSync3(src, "utf-8");
-    if (existsSync4(dest) && readFileSync3(dest, "utf-8") === srcContent)
+    if (existsSync5(dest) && readFileSync3(dest, "utf-8") === srcContent)
       continue;
-    if (!existsSync4(destDir))
-      mkdirSync4(destDir, { recursive: true });
+    if (!existsSync5(destDir))
+      mkdirSync5(destDir, { recursive: true });
     writeFileSync2(dest, srcContent);
     skillsCopied++;
   }
   console.log(skillsCopied > 0 ? `[apsolut-cortex] ✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})` : `[apsolut-cortex] ✓ Skills already installed`);
-  const gitignore = join3(PROJECT_ROOT, ".gitignore");
-  if (existsSync4(gitignore)) {
+  const gitignore = join4(PROJECT_ROOT, ".gitignore");
+  if (existsSync5(gitignore)) {
     const content = readFileSync3(gitignore, "utf-8");
     if (!content.includes(".apsolut-cortex/")) {
       writeFileSync2(gitignore, content + `
@@ -652,7 +876,7 @@ async function init() {
   console.log(BANNER);
 }
 async function status() {
-  if (!existsSync4(PROJECT_CONFIG)) {
+  if (!existsSync5(PROJECT_CONFIG)) {
     console.log("[apsolut-cortex] No project found. Run: apsolut-cortex init");
     process.exit(1);
   }
@@ -770,6 +994,95 @@ async function correctCmd(args) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
   }
 }
+async function backupCmd() {
+  const dest = snapshot("manual");
+  console.log(`[apsolut-cortex] ✓ Snapshot written to ${dest}`);
+  console.log(`[apsolut-cortex]   (encrypted at rest if key is set in the OS keychain)`);
+  const all = listBackups();
+  if (all.length > 1) {
+    console.log(`[apsolut-cortex]   ${all.length} total snapshots under ${BACKUP_DIR}`);
+  }
+}
+async function restoreCmd(target, args) {
+  if (!target) {
+    const all = listBackups();
+    if (all.length === 0) {
+      console.log(`[apsolut-cortex] No snapshots in ${BACKUP_DIR}`);
+      return;
+    }
+    console.log(`[apsolut-cortex] Available snapshots (newest first):`);
+    for (const b of all.slice(0, 20)) {
+      const kb = Math.round(b.bytes / 1024);
+      console.log(`  ${b.mtime.toISOString()}  ${kb.toString().padStart(6)}KB  ${b.path}`);
+    }
+    console.log(`
+[apsolut-cortex] Restore one with: apsolut-cortex restore <path> --yes`);
+    return;
+  }
+  if (!args.includes("--yes")) {
+    console.log(`[apsolut-cortex] Refusing to overwrite ${DB_PATH} without --yes.`);
+    console.log(`[apsolut-cortex] A safety snapshot will be taken first if you confirm:`);
+    console.log(`    apsolut-cortex restore ${target} --yes`);
+    return;
+  }
+  const result = restore(target);
+  console.log(`[apsolut-cortex] ✓ Restored ${result.restored} → ${DB_PATH}`);
+  if (result.safetyBackup) {
+    console.log(`[apsolut-cortex]   Pre-restore safety snapshot at ${result.safetyBackup}`);
+  }
+}
+async function dbCmd(sub, args) {
+  switch (sub) {
+    case "re-encrypt": {
+      const existing = getDbKey();
+      if (existing) {
+        console.log(`[apsolut-cortex] An encryption key is already set in the OS keychain.`);
+        console.log(`[apsolut-cortex] If the DB is already encrypted, nothing to do.`);
+        console.log(`[apsolut-cortex] If you need to rotate the key, that flow is not implemented yet — back up and ask.`);
+        return;
+      }
+      if (!args.includes("--yes")) {
+        console.log(`[apsolut-cortex] db re-encrypt`);
+        console.log(`  - generates a new 256-bit key, stores it in the OS keychain`);
+        console.log(`  - snapshots the current DB to ~/.apsolut-cortex/backup/pre-encrypt-<ts>.db`);
+        console.log(`  - copies every row into a fresh encrypted DB`);
+        console.log(`  - atomically replaces the live DB`);
+        console.log(`
+  The pre-encrypt backup is never deleted. If anything goes wrong`);
+        console.log(`  you can copy it back over memory.db to recover.`);
+        console.log(`
+  Run again with --yes to proceed:`);
+        console.log(`    apsolut-cortex db re-encrypt --yes`);
+        return;
+      }
+      console.log(`[apsolut-cortex] Generating key and re-encrypting DB...`);
+      const key = generateDbKey();
+      setDbKey(key);
+      try {
+        const result = await reencryptToKey(key);
+        console.log(`[apsolut-cortex] ✓ Re-encryption complete.`);
+        console.log(`  pre-encrypt backup: ${result.source_backup}`);
+        for (const [tbl, n] of Object.entries(result.rows_copied)) {
+          console.log(`  ${tbl.padEnd(15)} ${n.toString().padStart(6)} rows copied`);
+        }
+        console.log(`
+  Encryption key is in the OS keychain (service "apsolut-cortex",`);
+        console.log(`  account "db-encryption-key"). The DB is unreadable without it.`);
+      } catch (e) {
+        console.log(`[apsolut-cortex] ✗ Re-encryption failed: ${e instanceof Error ? e.message : e}`);
+        console.log(`[apsolut-cortex] The original DB is untouched. The key was already saved`);
+        console.log(`[apsolut-cortex] to the keychain — delete it manually if you don't intend to`);
+        console.log(`[apsolut-cortex] retry, or the next startup will fail on the unencrypted DB.`);
+        process.exitCode = 1;
+      }
+      break;
+    }
+    default:
+      console.log(`[apsolut-cortex] db — subcommands:`);
+      console.log(`  apsolut-cortex db re-encrypt   Migrate the DB to encrypted at rest`);
+      break;
+  }
+}
 async function evalCmd(subcommand) {
   if (IS_DIST) {
     console.log("[apsolut-cortex] `eval` is a maintainer-only command.");
@@ -779,8 +1092,8 @@ async function evalCmd(subcommand) {
     console.log("    bun run src/cli.ts eval run");
     return;
   }
-  const evalsRoot = join3(PACKAGE_ROOT, "evals");
-  const runnerModule = pathToFileURL(join3(evalsRoot, "runner.ts")).href;
+  const evalsRoot = join4(PACKAGE_ROOT, "evals");
+  const runnerModule = pathToFileURL(join4(evalsRoot, "runner.ts")).href;
   const {
     runEvals,
     formatResult,
@@ -818,7 +1131,7 @@ async function evalCmd(subcommand) {
   }
 }
 function uninstall() {
-  if (existsSync4(MCP_JSON)) {
+  if (existsSync5(MCP_JSON)) {
     try {
       const mcp = JSON.parse(readFileSync3(MCP_JSON, "utf-8"));
       if (mcp.mcpServers?.["apsolut-cortex"]) {
@@ -828,7 +1141,7 @@ function uninstall() {
       }
     } catch {}
   }
-  if (existsSync4(CLAUDE_SETTINGS)) {
+  if (existsSync5(CLAUDE_SETTINGS)) {
     try {
       const settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
       const hooks = settings.hooks;
@@ -851,14 +1164,14 @@ function uninstall() {
     } catch {}
   }
   const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget", "remember", "store", "status", "forget"];
-  const skillsDir = join3(homedir3(), ".claude", "skills");
+  const skillsDir = join4(homedir3(), ".claude", "skills");
   let skillsRemoved = 0;
   for (const name of SKILL_NAMES) {
-    const skillFile = join3(skillsDir, name, "SKILL.md");
-    if (existsSync4(skillFile)) {
+    const skillFile = join4(skillsDir, name, "SKILL.md");
+    if (existsSync5(skillFile)) {
       const content = readFileSync3(skillFile, "utf-8");
       if (content.includes("memory_")) {
-        rmSync(join3(skillsDir, name), { recursive: true, force: true });
+        rmSync(join4(skillsDir, name), { recursive: true, force: true });
         skillsRemoved++;
       }
     }

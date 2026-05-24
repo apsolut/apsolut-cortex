@@ -23,11 +23,13 @@ import { join, resolve, dirname } from "path";
 import { homedir } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 import { registerProject } from "./registry.js";
-import { getDb, insertMemory } from "./db.js";
+import { getDb, insertMemory, DB_PATH } from "./db.js";
 import { runMigrations } from "./migrations/runner.js";
 import { getLastRetrieval, logCorrection } from "./logs.js";
 import { embed } from "./embed.js";
 import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
+import { snapshot, listBackups, restore, reencryptToKey, BACKUP_DIR } from "./backup.js";
+import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -51,6 +53,9 @@ switch (cmd) {
   case "status":             await status(); break;
   case "migrate":            await migrate(); break;
   case "correct":            await correctCmd(process.argv.slice(3)); break;
+  case "backup":             await backupCmd(); break;
+  case "restore":            await restoreCmd(process.argv[3], process.argv.slice(4)); break;
+  case "db":                 await dbCmd(process.argv[3], process.argv.slice(4)); break;
   case "eval":               await evalCmd(process.argv[3]); break;
   case "uninstall":          uninstall(); break;
   case "hook:session-start": await runHook("session-start"); break;
@@ -70,6 +75,9 @@ switch (cmd) {
   │    status      Show memory stats                 │
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
+  │    backup      Snapshot the DB                   │
+  │    restore     Restore a snapshot                │
+  │    db re-encrypt  Migrate DB to encrypted        │
   │    uninstall   Remove hooks & MCP config         │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
@@ -428,6 +436,98 @@ async function correctCmd(args: string[]) {
   console.log(`[apsolut-cortex] ✓ Flagged retrieval as a miss in ~/.apsolut-cortex/logs/corrections.jsonl`);
   if (!correctionText) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
+  }
+}
+
+// ── Backup / Restore ──────────────────────────────────────────────────────────
+
+async function backupCmd() {
+  const dest = snapshot("manual");
+  console.log(`[apsolut-cortex] ✓ Snapshot written to ${dest}`);
+  console.log(`[apsolut-cortex]   (encrypted at rest if key is set in the OS keychain)`);
+  const all = listBackups();
+  if (all.length > 1) {
+    console.log(`[apsolut-cortex]   ${all.length} total snapshots under ${BACKUP_DIR}`);
+  }
+}
+
+async function restoreCmd(target: string | undefined, args: string[]) {
+  if (!target) {
+    const all = listBackups();
+    if (all.length === 0) {
+      console.log(`[apsolut-cortex] No snapshots in ${BACKUP_DIR}`);
+      return;
+    }
+    console.log(`[apsolut-cortex] Available snapshots (newest first):`);
+    for (const b of all.slice(0, 20)) {
+      const kb = Math.round(b.bytes / 1024);
+      console.log(`  ${b.mtime.toISOString()}  ${kb.toString().padStart(6)}KB  ${b.path}`);
+    }
+    console.log(`\n[apsolut-cortex] Restore one with: apsolut-cortex restore <path> --yes`);
+    return;
+  }
+  if (!args.includes("--yes")) {
+    console.log(`[apsolut-cortex] Refusing to overwrite ${DB_PATH} without --yes.`);
+    console.log(`[apsolut-cortex] A safety snapshot will be taken first if you confirm:`);
+    console.log(`    apsolut-cortex restore ${target} --yes`);
+    return;
+  }
+  const result = restore(target);
+  console.log(`[apsolut-cortex] ✓ Restored ${result.restored} → ${DB_PATH}`);
+  if (result.safetyBackup) {
+    console.log(`[apsolut-cortex]   Pre-restore safety snapshot at ${result.safetyBackup}`);
+  }
+}
+
+// ── DB management ─────────────────────────────────────────────────────────────
+
+async function dbCmd(sub: string | undefined, args: string[]) {
+  switch (sub) {
+    case "re-encrypt": {
+      const existing = getDbKey();
+      if (existing) {
+        console.log(`[apsolut-cortex] An encryption key is already set in the OS keychain.`);
+        console.log(`[apsolut-cortex] If the DB is already encrypted, nothing to do.`);
+        console.log(`[apsolut-cortex] If you need to rotate the key, that flow is not implemented yet — back up and ask.`);
+        return;
+      }
+      if (!args.includes("--yes")) {
+        console.log(`[apsolut-cortex] db re-encrypt`);
+        console.log(`  - generates a new 256-bit key, stores it in the OS keychain`);
+        console.log(`  - snapshots the current DB to ~/.apsolut-cortex/backup/pre-encrypt-<ts>.db`);
+        console.log(`  - copies every row into a fresh encrypted DB`);
+        console.log(`  - atomically replaces the live DB`);
+        console.log(`\n  The pre-encrypt backup is never deleted. If anything goes wrong`);
+        console.log(`  you can copy it back over memory.db to recover.`);
+        console.log(`\n  Run again with --yes to proceed:`);
+        console.log(`    apsolut-cortex db re-encrypt --yes`);
+        return;
+      }
+      console.log(`[apsolut-cortex] Generating key and re-encrypting DB...`);
+      const key = generateDbKey();
+      setDbKey(key);
+      try {
+        const result = await reencryptToKey(key);
+        console.log(`[apsolut-cortex] ✓ Re-encryption complete.`);
+        console.log(`  pre-encrypt backup: ${result.source_backup}`);
+        for (const [tbl, n] of Object.entries(result.rows_copied)) {
+          console.log(`  ${tbl.padEnd(15)} ${n.toString().padStart(6)} rows copied`);
+        }
+        console.log(`\n  Encryption key is in the OS keychain (service "apsolut-cortex",`);
+        console.log(`  account "db-encryption-key"). The DB is unreadable without it.`);
+      } catch (e) {
+        console.log(`[apsolut-cortex] ✗ Re-encryption failed: ${e instanceof Error ? e.message : e}`);
+        console.log(`[apsolut-cortex] The original DB is untouched. The key was already saved`);
+        console.log(`[apsolut-cortex] to the keychain — delete it manually if you don't intend to`);
+        console.log(`[apsolut-cortex] retry, or the next startup will fail on the unencrypted DB.`);
+        process.exitCode = 1;
+      }
+      break;
+    }
+    default:
+      console.log(`[apsolut-cortex] db — subcommands:`);
+      console.log(`  apsolut-cortex db re-encrypt   Migrate the DB to encrypted at rest`);
+      break;
   }
 }
 

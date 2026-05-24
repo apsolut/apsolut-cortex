@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] – 2026-05-24
+
+### Added
+- **M3 encryption at rest + backup/restore (opt-in, Phase 2):** libSQL-native encryption via `encryptionKey` on `createClient()`. Key is stored in the OS keychain (`@napi-rs/keyring` → Windows Credential Manager / macOS Keychain / libsecret) under service `apsolut-cortex`, account `db-encryption-key`.
+- **`apsolut-cortex db re-encrypt`** CLI command: opt-in migration of the existing plaintext DB. Generates a 256-bit key, snapshots the current DB to `~/.apsolut-cortex/backup/pre-encrypt-<ts>.db` (never deleted), copies every row into a fresh encrypted DB, atomically replaces the live file. Dry-run by default; requires `--yes` to proceed. Original DB untouched on any failure.
+- **`apsolut-cortex backup`** CLI command: physical file snapshot to `~/.apsolut-cortex/backup/manual-<ts>.db`.
+- **`apsolut-cortex restore [<path>] [--yes]`** CLI command: lists snapshots without args; restores with `--yes`. Always writes a pre-restore safety snapshot first.
+- **`src/keyring.ts`** + **`src/backup.ts`** modules with focused unit tests. Round-trip test verifies that a re-encrypted DB reads back correctly with the key, fails to open without it, and that FTS5 search still works after re-encryption.
+- **`docs/OPERATIONS.md`** updated with the encryption opt-in flow, backup/restore commands, and the "do not nuke the keychain after encrypting" warning.
+
+### Changed
+- `getDb()` now checks the OS keychain on first connection. If a key is present it is passed to `createClient({ encryptionKey })`; if absent, the DB opens unencrypted (same behavior as before this release). Existing users are unaffected until they explicitly run `apsolut-cortex db re-encrypt --yes`.
+- `build.ts` marks `@napi-rs/keyring` as external so its native bindings resolve from `node_modules/` at runtime rather than being bundled.
+
+### Dependencies
+- Added `@napi-rs/keyring@^1.3.0` for OS keychain access (native, ~few hundred KB per platform).
+
 ## [0.7.0] – 2026-05-24
 
 ### Added
@@ -96,7 +113,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.6.0...v0.6.1

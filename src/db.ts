@@ -17,6 +17,7 @@ import {
   CORTEX_PRUNE_WEIGHT,
 } from "./config.js";
 import { runMigrations } from "./migrations/runner.js";
+import { getDbKey } from "./keyring.js";
 
 /** Anything with an execute() method — works for both Client and Transaction. */
 export type DbConn = { execute(stmt: InStatement): Promise<ResultSet> };
@@ -36,7 +37,22 @@ export async function getDb(): Promise<Client> {
   if (!existsSync(MODELS_DIR)) mkdirSync(MODELS_DIR, { recursive: true });
 
   if (!_db) {
-    _db = createClient({ url: `file:${DB_PATH}` });
+    // Try the OS keychain for an encryption key. Absent → unencrypted DB
+    // (legacy / opt-in mode). Present → pass it to libSQL. If the key is
+    // wrong, the FIRST query will throw with SQLITE_NOTADB, which is the
+    // correct "fail loud" behavior — we do NOT want to silently create a
+    // new DB next to a real one the user can no longer read.
+    let key: string | null = null;
+    try {
+      key = getDbKey();
+    } catch (e) {
+      process.stderr.write(
+        `[apsolut-cortex] keychain unreachable; opening DB without encryption. (${e})\n`
+      );
+    }
+    _db = key
+      ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key })
+      : createClient({ url: `file:${DB_PATH}` });
   }
 
   if (!_initialized) {

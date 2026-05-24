@@ -213,6 +213,23 @@ async function releaseLock(client) {
   await client.execute("DELETE FROM _migrations_lock WHERE id = 1");
 }
 
+// src/keyring.ts
+import { Entry } from "@napi-rs/keyring";
+var KEYRING_SERVICE = "apsolut-cortex";
+var KEYRING_ACCOUNT_DB_KEY = "db-encryption-key";
+function getDbKey(service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
+  const entry = new Entry(service, account);
+  try {
+    return entry.getPassword();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message.toLowerCase() : String(e);
+    if (msg.includes("not found") || msg.includes("no matching") || msg.includes("does not exist") || msg.includes("the specified item could not be found")) {
+      return null;
+    }
+    throw new Error(`[apsolut-cortex] keychain read failed (${service}/${account}): ${e}`);
+  }
+}
+
 // src/db.ts
 var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
@@ -228,7 +245,14 @@ async function getDb() {
   if (!existsSync(MODELS_DIR))
     mkdirSync(MODELS_DIR, { recursive: true });
   if (!_db) {
-    _db = createClient({ url: `file:${DB_PATH}` });
+    let key = null;
+    try {
+      key = getDbKey();
+    } catch (e) {
+      process.stderr.write(`[apsolut-cortex] keychain unreachable; opening DB without encryption. (${e})
+`);
+    }
+    _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
   }
   if (!_initialized) {
     await runMigrations(_db);
