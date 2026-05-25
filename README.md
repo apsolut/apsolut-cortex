@@ -217,43 +217,14 @@ Canonical memories never decay.
 
 ## Configuration
 
-All env vars use the `APSOLUT_CORTEX_` prefix. Defaults work well out of the box.
+All env vars use the `APSOLUT_CORTEX_` prefix and have sane defaults — most people will never set one. The five most commonly tweaked:
 
-**Duplicate detection**
-- `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` — `0.92` — cosine similarity for dedup
+| Env var | Default | What it does |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | _(unset)_ | Required for primary compression (Haiku). Without it, falls back to Ollama. |
+| `APSOLUT_CORTEX_OBSERVE_THRESHOLD` | `30000` | Conversation tokens that fire mid-session compression (M6). |
+| `APSOLUT_CORTEX_DECAY_DAYS` | `7` | Days unused before a memory's weight starts decaying. |
+| `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` | `0.92` | Cosine similarity floor for the dedup-on-insert check. |
+| `APSOLUT_CORTEX_SHADOW` | _(unset)_ | When truthy, retrieval logs to `~/.apsolut-cortex/logs/shadow.jsonl` without injecting (M1). |
 
-**Memory decay**
-- `APSOLUT_CORTEX_DECAY_DAYS` — `7` — days before unused memories decay
-- `APSOLUT_CORTEX_DECAY_OBSERVED` — `0.95` — weekly decay for observed-trust
-- `APSOLUT_CORTEX_DECAY_VALIDATED` — `0.98` — weekly decay for validated-trust
-- `APSOLUT_CORTEX_PRUNE_WEIGHT` — `0.1` — weight below which memories are pruned
-
-**Search & ranking**
-- `APSOLUT_CORTEX_RRF_K` — `60` — RRF fusion constant
-- `APSOLUT_CORTEX_MMR_LAMBDA` — `0.7` — relevance vs diversity (0–1)
-- `APSOLUT_CORTEX_SEARCH_LIMIT_MAX` — `10` — max results returned
-- `APSOLUT_CORTEX_SEARCH_MULTIPLIER` — `2` — overfetch multiplier
-
-**Weight updates**
-- `APSOLUT_CORTEX_WEIGHT_ALPHA` — `0.3` — EMA alpha for weight updates
-- `APSOLUT_CORTEX_PROMOTE_WEIGHT` — `1.4` — weight threshold for promotion
-- `APSOLUT_CORTEX_PROMOTE_USES` — `3` — use count for promotion
-- `APSOLUT_CORTEX_BUMP_BOOST` — `0.1` — weight bump on duplicate
-- `APSOLUT_CORTEX_WEIGHT_CAP` — `3.0` — max weight
-
-**Memory creation**
-- `APSOLUT_CORTEX_CORRECTION_WEIGHT` — `1.5` — initial weight for corrections
-- `APSOLUT_CORTEX_MANUAL_WEIGHT` — `1.2` — initial weight for manual stores
-
-**Compression (legacy + M6)**
-- `APSOLUT_CORTEX_OLLAMA_MODEL` — `qwen2.5-coder:7b` — Ollama model
-- `OLLAMA_HOST` — `http://localhost:11434` — Ollama server URL
-- `APSOLUT_CORTEX_OBSERVE_THRESHOLD` — `30000` — conversation tokens that fire a background compression run (M6)
-- `APSOLUT_CORTEX_OBSERVE_BLOCK_MULT` — `1.2` — synchronous compression kicks in at `THRESHOLD × this` as a safety net (M6)
-- `APSOLUT_CORTEX_REFLECT_THRESHOLD` — `40000` — re-summarize a session's memories into denser reflections above this token count (M6)
-
-**Range-linked memories (M4)**
-- `APSOLUT_CORTEX_RAW_RETENTION_DAYS` — `90` — days to keep `raw_messages` rows before cleanup (cleanup job pending M8's `is_pinned`)
-
-**Eval (M1)**
-- `APSOLUT_CORTEX_SHADOW` — `false` — when truthy, `memory_search` logs would-have-been-injected matches to `~/.apsolut-cortex/logs/shadow.jsonl` without returning anything to Claude
+Full env-var reference — all 21, grouped by concern, with descriptions and trade-offs — lives in **[docs/CONFIG.md](docs/CONFIG.md)**.

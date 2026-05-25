@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.5] – 2026-05-25
+
+### Added
+- **`LICENSE`** at repo root. `package.json` already declared MIT but the actual file was missing; npm shows the badge from the field but legal/auditors want the file. Now both line up.
+- **`SECURITY.md`** — supported-versions table, what to report vs. what's out of scope, private disclosure channels (GitHub security advisories or maintainer email).
+- **`CONTRIBUTING.md`** — setup, code conventions (no AI attribution lines, no future-proofing comments, the `~/.apsolut/` rule), test patterns, migration safety rules, ADR convention.
+- **`CODE_OF_CONDUCT.md`** — Contributor Covenant v2.1 reference.
+
+### Changed (docs only)
+- **README `## Configuration`** trimmed from ~21 inline env vars to a "five most commonly tweaked" table + a pointer to the full reference in `docs/CONFIG.md`. Removed the duplication that was getting out of sync between the two files.
+
 ## [0.12.4] – 2026-05-25
 
 ### Changed (docs only)
@@ -199,7 +210,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.4...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.5...HEAD
+[0.12.5]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.1...v0.12.2
