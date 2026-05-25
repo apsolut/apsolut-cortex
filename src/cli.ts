@@ -31,6 +31,16 @@ import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
 import { snapshot, listBackups, restore, reencryptToKey, BACKUP_DIR } from "./backup.js";
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 import { exportVault, OBSIDIAN_DIR } from "./export.js";
+import {
+  promoteMemory,
+  demoteMemory,
+  tagMemory,
+  untagMemory,
+  grepMemories,
+  previewDeletion,
+  applyDeletion,
+  type DeleteFilters,
+} from "./curation.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -55,6 +65,12 @@ switch (cmd) {
   case "migrate":            await migrate(); break;
   case "correct":            await correctCmd(process.argv.slice(3)); break;
   case "export":             await exportCmd(); break;
+  case "promote":            await promoteCmd(process.argv[3]); break;
+  case "demote":             await demoteCmd(process.argv[3]); break;
+  case "tag":                await tagCmd(process.argv[3], process.argv[4]); break;
+  case "untag":              await untagCmd(process.argv[3], process.argv[4]); break;
+  case "grep":               await grepCmd(process.argv.slice(3)); break;
+  case "delete":             await deleteCmd(process.argv.slice(3)); break;
   case "backup":             await backupCmd(); break;
   case "restore":            await restoreCmd(process.argv[3], process.argv.slice(4)); break;
   case "db":                 await dbCmd(process.argv[3], process.argv.slice(4)); break;
@@ -81,6 +97,11 @@ switch (cmd) {
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
   │    export      Export memories to Obsidian vault │
+  │    promote     Promote a memory trust tier       │
+  │    demote      Demote a memory trust tier        │
+  │    tag/untag   Add/remove a tag                  │
+  │    grep        Substring search across memories  │
+  │    delete      Single or bulk delete (--id, etc) │
   │    install-hooks  Wire M6 hooks (PreCompact+)    │
   │    backup      Snapshot the DB                   │
   │    restore     Restore a snapshot                │
@@ -443,6 +464,106 @@ async function correctCmd(args: string[]) {
   console.log(`[apsolut-cortex] ✓ Flagged retrieval as a miss in ~/.apsolut-cortex/logs/corrections.jsonl`);
   if (!correctionText) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
+  }
+}
+
+// ── Curation: promote / demote / tag / untag / grep / delete ─────────────────
+
+async function promoteCmd(id: string | undefined) {
+  if (!id) { console.log("[apsolut-cortex] usage: apsolut-cortex promote <memory-id>"); return; }
+  const db = await getDb();
+  const result = await promoteMemory(db, id);
+  if (!result) { console.log(`[apsolut-cortex] No memory found with id "${id}".`); process.exitCode = 1; return; }
+  if (!result.changed) console.log(`[apsolut-cortex] Memory ${id} already at top trust tier (${result.previous}).`);
+  else console.log(`[apsolut-cortex] ✓ Promoted ${id}: ${result.previous} → ${result.next}`);
+}
+
+async function demoteCmd(id: string | undefined) {
+  if (!id) { console.log("[apsolut-cortex] usage: apsolut-cortex demote <memory-id>"); return; }
+  const db = await getDb();
+  const result = await demoteMemory(db, id);
+  if (!result) { console.log(`[apsolut-cortex] No memory found with id "${id}".`); process.exitCode = 1; return; }
+  if (!result.changed) console.log(`[apsolut-cortex] Memory ${id} already at bottom trust tier (${result.previous}).`);
+  else console.log(`[apsolut-cortex] ✓ Demoted ${id}: ${result.previous} → ${result.next}`);
+}
+
+async function tagCmd(id: string | undefined, tag: string | undefined) {
+  if (!id || !tag) { console.log("[apsolut-cortex] usage: apsolut-cortex tag <memory-id> <tag>"); return; }
+  const db = await getDb();
+  const ok = await tagMemory(db, id, tag);
+  if (!ok) { console.log(`[apsolut-cortex] No memory found with id "${id}".`); process.exitCode = 1; return; }
+  console.log(`[apsolut-cortex] ✓ Tagged ${id} with "${tag.toLowerCase()}"`);
+}
+
+async function untagCmd(id: string | undefined, tag: string | undefined) {
+  if (!id || !tag) { console.log("[apsolut-cortex] usage: apsolut-cortex untag <memory-id> <tag>"); return; }
+  const db = await getDb();
+  const removed = await untagMemory(db, id, tag);
+  console.log(removed
+    ? `[apsolut-cortex] ✓ Removed tag "${tag.toLowerCase()}" from ${id}`
+    : `[apsolut-cortex] Tag "${tag.toLowerCase()}" was not on ${id}.`);
+}
+
+async function grepCmd(args: string[]) {
+  const pattern = args[0];
+  if (!pattern) { console.log("[apsolut-cortex] usage: apsolut-cortex grep <pattern>"); return; }
+  if (!existsSync(PROJECT_CONFIG)) { console.log("[apsolut-cortex] No project here. Run: apsolut-cortex init"); process.exitCode = 1; return; }
+  const project = JSON.parse(readFileSync(PROJECT_CONFIG, "utf-8")) as { id: string; name: string };
+  const db = await getDb();
+  const hits = await grepMemories(db, project.id, pattern, 50);
+  if (hits.length === 0) { console.log(`[apsolut-cortex] No matches for "${pattern}" in project ${project.name}.`); return; }
+  console.log(`[apsolut-cortex] ${hits.length} match(es) in ${project.name}:`);
+  for (const h of hits) {
+    const snippet = h.content.length > 100 ? h.content.slice(0, 97) + "..." : h.content;
+    console.log(`  ${h.id.slice(0, 8)}  [${h.trust}/${h.category}, w=${h.weight.toFixed(2)}]  ${snippet}`);
+  }
+}
+
+async function deleteCmd(args: string[]) {
+  const filters: DeleteFilters = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--id") filters.id = args[++i];
+    else if (a === "--project") filters.project = args[++i];
+    else if (a === "--tag") filters.tag = args[++i];
+    else if (a === "--before") filters.before = args[++i];
+    else if (a === "--grep") filters.grep = args[++i];
+  }
+  const yes = args.includes("--yes");
+
+  if (!filters.id && !filters.project && !filters.tag && !filters.before && !filters.grep) {
+    console.log(`[apsolut-cortex] usage:`);
+    console.log(`  apsolut-cortex delete --id <memory-id>`);
+    console.log(`  apsolut-cortex delete --project <project-id> [--yes]`);
+    console.log(`  apsolut-cortex delete --tag <tag> [--yes]`);
+    console.log(`  apsolut-cortex delete --before YYYY-MM-DD [--yes]`);
+    console.log(`  apsolut-cortex delete --grep <pattern> [--yes]`);
+    console.log(`  (filters combine with AND. raw SQL is intentionally not accepted.)`);
+    return;
+  }
+
+  const db = await getDb();
+  try {
+    const preview = await previewDeletion(db, filters, 5);
+    if (preview.count === 0) { console.log(`[apsolut-cortex] No memories match those filters.`); return; }
+
+    console.log(`[apsolut-cortex] Would delete ${preview.count} memor${preview.count === 1 ? "y" : "ies"}.`);
+    for (const m of preview.sample) {
+      const snippet = m.content.length > 80 ? m.content.slice(0, 77) + "..." : m.content;
+      console.log(`  ${m.id.slice(0, 8)}  [${m.trust}/${m.category}]  ${snippet}`);
+    }
+    if (preview.count > preview.sample.length) console.log(`  ... and ${preview.count - preview.sample.length} more.`);
+
+    if (!yes) {
+      console.log(`\n[apsolut-cortex] Refusing to delete without --yes. Re-run the same command with --yes to proceed.`);
+      return;
+    }
+
+    const removed = await applyDeletion(db, filters);
+    console.log(`[apsolut-cortex] ✓ Deleted ${removed} memor${removed === 1 ? "y" : "ies"}.`);
+  } catch (e) {
+    console.log(`[apsolut-cortex] delete error: ${e instanceof Error ? e.message : e}`);
+    process.exitCode = 1;
   }
 }
 

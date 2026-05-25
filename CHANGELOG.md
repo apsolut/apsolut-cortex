@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] – 2026-05-25
+
+### Added
+- **M5 visibility layer — finished (Phase 2):**
+  - **Compiled views** in the Obsidian vault export: `by-category/<cat>.md` (every memory of a category across all projects, sorted by weight), `by-project/<name>.md` (per project, grouped by category), `_health.md` (low-trust high-use → consider `promote`; high-trust stale > 60d → consider `demote`; flagged-by-`memory_contradict`). All compiled views regenerate from scratch on every full export and stale files are GC'd.
+  - **Curation CLI commands:**
+    - `apsolut-cortex promote <id>` / `demote <id>` — walk the trust ladder (`observed → validated → proven → canonical`).
+    - `apsolut-cortex tag <id> <tag>` / `untag <id> <tag>` — free-form labels. Tags are lowercased and de-duped; `INSERT OR IGNORE` on the composite PK.
+    - `apsolut-cortex grep <pattern>` — substring search across content + context in the current project (top 50 hits).
+    - `apsolut-cortex delete` with `--id`, `--project`, `--tag`, `--before YYYY-MM-DD`, `--grep <pat>`. Filters combine with AND. Always shows a preview of the first 5 matches; refuses to run without `--yes`. No raw SQL accepted by design.
+  - **Tags in frontmatter:** memory `.md` files now include `tags:` array and a `[[tag-<name>]]` link footer for Obsidian graph view.
+- **Migration 004 — `memory_tags` table:** `(memory_id, tag, created_at)` with composite PK and a `(tag, memory_id)` index. Append-only; deletion is GC'd when the parent memory is removed.
+- **`src/curation.ts`** module with `promoteMemory` / `demoteMemory` / `tagMemory` / `untagMemory` / `getTagsForMemory` / `grepMemories` / `previewDeletion` / `applyDeletion` — 12 unit tests covering the trust ladder, tag round-trip, all delete-filter shapes, and the invalid-date guard.
+
 ## [0.11.0] – 2026-05-25
 
 ### Added
@@ -160,7 +174,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.8.0...v0.9.0

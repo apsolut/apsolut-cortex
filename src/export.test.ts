@@ -127,6 +127,39 @@ describe("exportVault", () => {
     db.close();
   });
 
+  test("full export generates compiled views (by-category, by-project, _health)", async () => {
+    const db = await freshDb();
+    await upsertProject(db, { id: "p-1", name: "compiled-project" });
+
+    await insertMemory(db, {
+      project_id: "p-1", tier: "semantic", category: "decision", trust: "validated",
+      content: "first decision", context: null, source: "manual", embedding: null,
+      weight: 1.5, session_id: null,
+    });
+    await insertMemory(db, {
+      project_id: "p-1", tier: "episodic", category: "correction", trust: "observed",
+      content: "an old correction", context: null, source: "manual", embedding: null,
+      weight: 1.0, session_id: null,
+    });
+
+    const vault = join(tmpRoot, "vault-compiled");
+    await exportVault(db, { vaultDir: vault });
+
+    expect(existsSync(join(vault, "_health.md"))).toBe(true);
+    expect(existsSync(join(vault, "by-category", "decision.md"))).toBe(true);
+    expect(existsSync(join(vault, "by-category", "correction.md"))).toBe(true);
+    expect(existsSync(join(vault, "by-project", "compiled-project.md"))).toBe(true);
+
+    const decisionPage = readFileSync(join(vault, "by-category", "decision.md"), "utf-8");
+    expect(decisionPage).toContain('category: "decision"');
+    expect(decisionPage).toContain("first decision");
+
+    const healthPage = readFileSync(join(vault, "_health.md"), "utf-8");
+    expect(healthPage).toContain("# Vault health");
+
+    db.close();
+  });
+
   test("project filter exports only matching memories and leaves others alone", async () => {
     const db = await freshDb();
     await upsertProject(db, { id: "p-1", name: "alpha" });

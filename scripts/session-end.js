@@ -243,11 +243,31 @@ var migration3 = {
 };
 var _003_raw_messages_default = migration3;
 
+// src/migrations/004-memory-tags.ts
+var migration4 = {
+  name: "004-memory-tags",
+  async up(client) {
+    await client.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS memory_tags (
+        memory_id   TEXT NOT NULL,
+        tag         TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, tag)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_tags_tag
+        ON memory_tags(tag, memory_id);
+    `);
+  }
+};
+var _004_memory_tags_default = migration4;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
-  _003_raw_messages_default
+  _003_raw_messages_default,
+  _004_memory_tags_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -853,11 +873,23 @@ function frontmatter(m, projectName) {
   return lines.join(`
 `);
 }
-function memoryFile(m, projectName) {
+function frontmatterWithTags(m, projectName, tags) {
+  const base = frontmatter(m, projectName).replace(/\n---\n?$/, "");
+  if (tags.length === 0)
+    return base + `
+---`;
+  const tagsYaml = tags.map((t) => `  - ${t}`).join(`
+`);
+  return `${base}
+tags:
+${tagsYaml}
+---`;
+}
+function memoryFile(m, projectName, tags = []) {
   const wikiProject = `[[${projectName}]]`;
   const wikiCategory = `[[category-${m.category}]]`;
   const bodyParts = [
-    frontmatter(m, projectName),
+    frontmatterWithTags(m, projectName, tags),
     "",
     GENERATED_HEADER,
     "",
@@ -868,8 +900,106 @@ function memoryFile(m, projectName) {
   if (m.context) {
     bodyParts.push("", "## Context", "", m.context);
   }
-  bodyParts.push("", "---", `Project: ${wikiProject} · Category: ${wikiCategory} · Trust: ${m.trust}`);
+  const tagLinks = tags.map((t) => `[[tag-${t}]]`).join(" · ");
+  bodyParts.push("", "---", `Project: ${wikiProject} · Category: ${wikiCategory} · Trust: ${m.trust}${tagLinks ? ` · Tags: ${tagLinks}` : ""}`);
   return bodyParts.join(`
+`) + `
+`;
+}
+function categoryPage(category, memories, projectName) {
+  const sorted = [...memories].sort((a, b) => b.weight - a.weight);
+  const lines = [
+    "---",
+    `category: "${category}"`,
+    `count: ${sorted.length}`,
+    `generated_at: "${new Date().toISOString()}"`,
+    "---",
+    "",
+    GENERATED_HEADER,
+    "",
+    `# ${category} (${sorted.length})`,
+    ""
+  ];
+  for (const m of sorted) {
+    const pName = projectName(m.project_id);
+    const fname = memoryFilename(m, pName);
+    const snippet = m.content.length > 150 ? m.content.slice(0, 147) + "..." : m.content;
+    lines.push(`- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] · [[${pName}]] · ${m.trust} · w=${m.weight.toFixed(2)} — ${snippet}`);
+  }
+  return lines.join(`
+`) + `
+`;
+}
+function projectPage(projectName, memories) {
+  const byCat = new Map;
+  for (const m of memories) {
+    if (!byCat.has(m.category))
+      byCat.set(m.category, []);
+    byCat.get(m.category).push(m);
+  }
+  const lines = [
+    "---",
+    `project: "${projectName}"`,
+    `count: ${memories.length}`,
+    `generated_at: "${new Date().toISOString()}"`,
+    "---",
+    "",
+    GENERATED_HEADER,
+    "",
+    `# ${projectName} (${memories.length})`,
+    ""
+  ];
+  for (const cat of [...byCat.keys()].sort()) {
+    const ms = byCat.get(cat).sort((a, b) => b.weight - a.weight);
+    lines.push(`## ${cat} (${ms.length})`, "");
+    for (const m of ms) {
+      const fname = memoryFilename(m, projectName);
+      const snippet = m.content.length > 150 ? m.content.slice(0, 147) + "..." : m.content;
+      lines.push(`- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] · ${m.trust} · w=${m.weight.toFixed(2)} — ${snippet}`);
+    }
+    lines.push("");
+  }
+  return lines.join(`
+`) + `
+`;
+}
+function healthPage(memories, projectName) {
+  const now = Date.now();
+  const STALE_DAYS = 60;
+  const staleMs = STALE_DAYS * 24 * 60 * 60 * 1000;
+  const lowTrustHighUse = memories.filter((m) => m.trust === "observed" && m.used_count >= 5).sort((a, b) => b.used_count - a.used_count);
+  const staleHighTrust = memories.filter((m) => (m.trust === "proven" || m.trust === "canonical") && (m.last_used === null || now - m.last_used > staleMs)).sort((a, b) => (b.last_used ?? 0) - (a.last_used ?? 0));
+  const flagged = memories.filter((m) => m.flagged === 1);
+  const fmtRow = (m) => {
+    const pName = projectName(m.project_id);
+    const fname = memoryFilename(m, pName);
+    const snippet = m.content.length > 100 ? m.content.slice(0, 97) + "..." : m.content;
+    return `- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] · [[${pName}]] · ${m.trust} · used=${m.used_count} · w=${m.weight.toFixed(2)} — ${snippet}`;
+  };
+  const lines = [
+    "---",
+    `generated_at: "${new Date().toISOString()}"`,
+    "---",
+    "",
+    GENERATED_HEADER,
+    "",
+    "# Vault health",
+    "",
+    `${memories.length} memories total. This page surfaces things that may need curation.`,
+    "",
+    `## Low-trust, high-use (consider \`apsolut-cortex promote\`) — ${lowTrustHighUse.length}`,
+    "",
+    ...lowTrustHighUse.length === 0 ? ["_(none)_"] : lowTrustHighUse.slice(0, 20).map(fmtRow),
+    "",
+    `## High-trust but stale > ${STALE_DAYS}d (consider \`apsolut-cortex demote\`) — ${staleHighTrust.length}`,
+    "",
+    ...staleHighTrust.length === 0 ? ["_(none)_"] : staleHighTrust.slice(0, 20).map(fmtRow),
+    "",
+    `## Flagged by memory_contradict — ${flagged.length}`,
+    "",
+    ...flagged.length === 0 ? ["_(none)_"] : flagged.slice(0, 20).map(fmtRow)
+  ];
+  return lines.join(`
 `) + `
 `;
 }
@@ -950,6 +1080,14 @@ async function exportVault(db, opts = {}) {
     source_start_msg_idx: r.source_start_msg_idx ?? null,
     source_end_msg_idx: r.source_end_msg_idx ?? null
   }));
+  const tagRows = await db.execute("SELECT memory_id, tag FROM memory_tags ORDER BY memory_id, tag");
+  const tagsByMemory = new Map;
+  for (const r of tagRows.rows) {
+    const mid = r.memory_id;
+    if (!tagsByMemory.has(mid))
+      tagsByMemory.set(mid, []);
+    tagsByMemory.get(mid).push(r.tag);
+  }
   const wantedFiles = new Set;
   const byProject = new Map;
   for (const m of memories) {
@@ -959,7 +1097,8 @@ async function exportVault(db, opts = {}) {
     byProject.get(pName).push(m);
     const fname = memoryFilename(m, pName);
     wantedFiles.add(fname);
-    writeFileSync2(join3(memoriesDir, fname), memoryFile(m, pName));
+    const tags = tagsByMemory.get(m.id) ?? [];
+    writeFileSync2(join3(memoriesDir, fname), memoryFile(m, pName, tags));
   }
   let removed = 0;
   if (!projectIdFilter) {
@@ -972,6 +1111,48 @@ async function exportVault(db, opts = {}) {
         } catch {}
       }
     }
+  }
+  if (!projectIdFilter) {
+    const byCategoryDir = join3(vaultDir, "by-category");
+    const byProjectDir = join3(vaultDir, "by-project");
+    if (!existsSync3(byCategoryDir))
+      mkdirSync2(byCategoryDir, { recursive: true });
+    if (!existsSync3(byProjectDir))
+      mkdirSync2(byProjectDir, { recursive: true });
+    const byCategory = new Map;
+    for (const m of memories) {
+      if (!byCategory.has(m.category))
+        byCategory.set(m.category, []);
+      byCategory.get(m.category).push(m);
+    }
+    const wantedCategory = new Set;
+    for (const [cat, ms] of byCategory) {
+      const fname = `${cat}.md`;
+      wantedCategory.add(fname);
+      writeFileSync2(join3(byCategoryDir, fname), categoryPage(cat, ms, (id) => projectName.get(id) ?? "unknown"));
+    }
+    for (const f of readdirSync(byCategoryDir).filter((x) => x.endsWith(".md"))) {
+      if (!wantedCategory.has(f)) {
+        try {
+          unlinkSync(join3(byCategoryDir, f));
+        } catch {}
+      }
+    }
+    const wantedProject = new Set;
+    for (const [pName, ms] of byProject) {
+      const safe = pName.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+      const fname = `${safe}.md`;
+      wantedProject.add(fname);
+      writeFileSync2(join3(byProjectDir, fname), projectPage(pName, ms));
+    }
+    for (const f of readdirSync(byProjectDir).filter((x) => x.endsWith(".md"))) {
+      if (!wantedProject.has(f)) {
+        try {
+          unlinkSync(join3(byProjectDir, f));
+        } catch {}
+      }
+    }
+    writeFileSync2(join3(vaultDir, "_health.md"), healthPage(memories, (id) => projectName.get(id) ?? "unknown"));
   }
   writeFileSync2(indexPath, indexFile(byProject));
   return {

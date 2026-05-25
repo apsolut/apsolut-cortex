@@ -201,11 +201,31 @@ var migration3 = {
 };
 var _003_raw_messages_default = migration3;
 
+// src/migrations/004-memory-tags.ts
+var migration4 = {
+  name: "004-memory-tags",
+  async up(client) {
+    await client.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS memory_tags (
+        memory_id   TEXT NOT NULL,
+        tag         TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, tag)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_tags_tag
+        ON memory_tags(tag, memory_id);
+    `);
+  }
+};
+var _004_memory_tags_default = migration4;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
-  _003_raw_messages_default
+  _003_raw_messages_default,
+  _004_memory_tags_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -333,6 +353,29 @@ async function getDb() {
 function vecToSql(arr) {
   return JSON.stringify(Array.from(arr));
 }
+function rowToMemory(r) {
+  return {
+    id: r.id,
+    project_id: r.project_id,
+    tier: r.tier,
+    category: r.category,
+    trust: r.trust,
+    content: r.content,
+    context: r.context,
+    source: r.source,
+    embedding: r.embedding,
+    weight: r.weight,
+    used_count: r.used_count,
+    last_used: r.last_used,
+    created_at: r.created_at,
+    session_id: r.session_id,
+    flagged: r.flagged,
+    flag_reason: r.flag_reason,
+    source_session_id: r.source_session_id ?? null,
+    source_start_msg_idx: r.source_start_msg_idx ?? null,
+    source_end_msg_idx: r.source_end_msg_idx ?? null
+  };
+}
 async function insertMemory(db, m) {
   const id = crypto.randomUUID();
   const srcSession = m.source_session_id ?? null;
@@ -432,6 +475,31 @@ var GREP_STOP_WORDS = new Set([
   "with",
   "you"
 ]);
+async function searchGrep(db, projectId, query, limit) {
+  const tokens = query.toLowerCase().split(/[^a-z0-9_-]+/).filter((t) => t.length >= 3 && !GREP_STOP_WORDS.has(t));
+  if (tokens.length === 0)
+    return [];
+  const orClauses = tokens.map(() => "(LOWER(content) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(context, '')) LIKE ? ESCAPE '\\')").join(" OR ");
+  const args = [projectId];
+  for (const t of tokens) {
+    const pattern = `%${t.replace(/[%_]/g, "\\$&")}%`;
+    args.push(pattern, pattern);
+  }
+  const result = await db.execute({
+    sql: `SELECT * FROM memories
+          WHERE project_id = ? AND (${orClauses})
+          ORDER BY created_at DESC`,
+    args
+  });
+  const scored = result.rows.map((r) => {
+    const m = rowToMemory(r);
+    const hay = `${m.content} ${m.context ?? ""}`.toLowerCase();
+    const score = tokens.reduce((s, t) => s + (hay.includes(t) ? 1 : 0), 0);
+    return { memory: m, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((s) => s.memory);
+}
 
 // src/registry.ts
 function readRegistry() {
@@ -739,11 +807,23 @@ function frontmatter(m, projectName) {
   return lines.join(`
 `);
 }
-function memoryFile(m, projectName) {
+function frontmatterWithTags(m, projectName, tags) {
+  const base = frontmatter(m, projectName).replace(/\n---\n?$/, "");
+  if (tags.length === 0)
+    return base + `
+---`;
+  const tagsYaml = tags.map((t) => `  - ${t}`).join(`
+`);
+  return `${base}
+tags:
+${tagsYaml}
+---`;
+}
+function memoryFile(m, projectName, tags = []) {
   const wikiProject = `[[${projectName}]]`;
   const wikiCategory = `[[category-${m.category}]]`;
   const bodyParts = [
-    frontmatter(m, projectName),
+    frontmatterWithTags(m, projectName, tags),
     "",
     GENERATED_HEADER,
     "",
@@ -754,8 +834,106 @@ function memoryFile(m, projectName) {
   if (m.context) {
     bodyParts.push("", "## Context", "", m.context);
   }
-  bodyParts.push("", "---", `Project: ${wikiProject} · Category: ${wikiCategory} · Trust: ${m.trust}`);
+  const tagLinks = tags.map((t) => `[[tag-${t}]]`).join(" · ");
+  bodyParts.push("", "---", `Project: ${wikiProject} · Category: ${wikiCategory} · Trust: ${m.trust}${tagLinks ? ` · Tags: ${tagLinks}` : ""}`);
   return bodyParts.join(`
+`) + `
+`;
+}
+function categoryPage(category, memories, projectName) {
+  const sorted = [...memories].sort((a, b) => b.weight - a.weight);
+  const lines = [
+    "---",
+    `category: "${category}"`,
+    `count: ${sorted.length}`,
+    `generated_at: "${new Date().toISOString()}"`,
+    "---",
+    "",
+    GENERATED_HEADER,
+    "",
+    `# ${category} (${sorted.length})`,
+    ""
+  ];
+  for (const m of sorted) {
+    const pName = projectName(m.project_id);
+    const fname = memoryFilename(m, pName);
+    const snippet = m.content.length > 150 ? m.content.slice(0, 147) + "..." : m.content;
+    lines.push(`- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] · [[${pName}]] · ${m.trust} · w=${m.weight.toFixed(2)} — ${snippet}`);
+  }
+  return lines.join(`
+`) + `
+`;
+}
+function projectPage(projectName, memories) {
+  const byCat = new Map;
+  for (const m of memories) {
+    if (!byCat.has(m.category))
+      byCat.set(m.category, []);
+    byCat.get(m.category).push(m);
+  }
+  const lines = [
+    "---",
+    `project: "${projectName}"`,
+    `count: ${memories.length}`,
+    `generated_at: "${new Date().toISOString()}"`,
+    "---",
+    "",
+    GENERATED_HEADER,
+    "",
+    `# ${projectName} (${memories.length})`,
+    ""
+  ];
+  for (const cat of [...byCat.keys()].sort()) {
+    const ms = byCat.get(cat).sort((a, b) => b.weight - a.weight);
+    lines.push(`## ${cat} (${ms.length})`, "");
+    for (const m of ms) {
+      const fname = memoryFilename(m, projectName);
+      const snippet = m.content.length > 150 ? m.content.slice(0, 147) + "..." : m.content;
+      lines.push(`- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] · ${m.trust} · w=${m.weight.toFixed(2)} — ${snippet}`);
+    }
+    lines.push("");
+  }
+  return lines.join(`
+`) + `
+`;
+}
+function healthPage(memories, projectName) {
+  const now = Date.now();
+  const STALE_DAYS = 60;
+  const staleMs = STALE_DAYS * 24 * 60 * 60 * 1000;
+  const lowTrustHighUse = memories.filter((m) => m.trust === "observed" && m.used_count >= 5).sort((a, b) => b.used_count - a.used_count);
+  const staleHighTrust = memories.filter((m) => (m.trust === "proven" || m.trust === "canonical") && (m.last_used === null || now - m.last_used > staleMs)).sort((a, b) => (b.last_used ?? 0) - (a.last_used ?? 0));
+  const flagged = memories.filter((m) => m.flagged === 1);
+  const fmtRow = (m) => {
+    const pName = projectName(m.project_id);
+    const fname = memoryFilename(m, pName);
+    const snippet = m.content.length > 100 ? m.content.slice(0, 97) + "..." : m.content;
+    return `- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] · [[${pName}]] · ${m.trust} · used=${m.used_count} · w=${m.weight.toFixed(2)} — ${snippet}`;
+  };
+  const lines = [
+    "---",
+    `generated_at: "${new Date().toISOString()}"`,
+    "---",
+    "",
+    GENERATED_HEADER,
+    "",
+    "# Vault health",
+    "",
+    `${memories.length} memories total. This page surfaces things that may need curation.`,
+    "",
+    `## Low-trust, high-use (consider \`apsolut-cortex promote\`) — ${lowTrustHighUse.length}`,
+    "",
+    ...lowTrustHighUse.length === 0 ? ["_(none)_"] : lowTrustHighUse.slice(0, 20).map(fmtRow),
+    "",
+    `## High-trust but stale > ${STALE_DAYS}d (consider \`apsolut-cortex demote\`) — ${staleHighTrust.length}`,
+    "",
+    ...staleHighTrust.length === 0 ? ["_(none)_"] : staleHighTrust.slice(0, 20).map(fmtRow),
+    "",
+    `## Flagged by memory_contradict — ${flagged.length}`,
+    "",
+    ...flagged.length === 0 ? ["_(none)_"] : flagged.slice(0, 20).map(fmtRow)
+  ];
+  return lines.join(`
 `) + `
 `;
 }
@@ -836,6 +1014,14 @@ async function exportVault(db, opts = {}) {
     source_start_msg_idx: r.source_start_msg_idx ?? null,
     source_end_msg_idx: r.source_end_msg_idx ?? null
   }));
+  const tagRows = await db.execute("SELECT memory_id, tag FROM memory_tags ORDER BY memory_id, tag");
+  const tagsByMemory = new Map;
+  for (const r of tagRows.rows) {
+    const mid = r.memory_id;
+    if (!tagsByMemory.has(mid))
+      tagsByMemory.set(mid, []);
+    tagsByMemory.get(mid).push(r.tag);
+  }
   const wantedFiles = new Set;
   const byProject = new Map;
   for (const m of memories) {
@@ -845,7 +1031,8 @@ async function exportVault(db, opts = {}) {
     byProject.get(pName).push(m);
     const fname = memoryFilename(m, pName);
     wantedFiles.add(fname);
-    writeFileSync2(join4(memoriesDir, fname), memoryFile(m, pName));
+    const tags = tagsByMemory.get(m.id) ?? [];
+    writeFileSync2(join4(memoriesDir, fname), memoryFile(m, pName, tags));
   }
   let removed = 0;
   if (!projectIdFilter) {
@@ -859,12 +1046,166 @@ async function exportVault(db, opts = {}) {
       }
     }
   }
+  if (!projectIdFilter) {
+    const byCategoryDir = join4(vaultDir, "by-category");
+    const byProjectDir = join4(vaultDir, "by-project");
+    if (!existsSync5(byCategoryDir))
+      mkdirSync5(byCategoryDir, { recursive: true });
+    if (!existsSync5(byProjectDir))
+      mkdirSync5(byProjectDir, { recursive: true });
+    const byCategory = new Map;
+    for (const m of memories) {
+      if (!byCategory.has(m.category))
+        byCategory.set(m.category, []);
+      byCategory.get(m.category).push(m);
+    }
+    const wantedCategory = new Set;
+    for (const [cat, ms] of byCategory) {
+      const fname = `${cat}.md`;
+      wantedCategory.add(fname);
+      writeFileSync2(join4(byCategoryDir, fname), categoryPage(cat, ms, (id) => projectName.get(id) ?? "unknown"));
+    }
+    for (const f of readdirSync2(byCategoryDir).filter((x) => x.endsWith(".md"))) {
+      if (!wantedCategory.has(f)) {
+        try {
+          unlinkSync2(join4(byCategoryDir, f));
+        } catch {}
+      }
+    }
+    const wantedProject = new Set;
+    for (const [pName, ms] of byProject) {
+      const safe = pName.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+      const fname = `${safe}.md`;
+      wantedProject.add(fname);
+      writeFileSync2(join4(byProjectDir, fname), projectPage(pName, ms));
+    }
+    for (const f of readdirSync2(byProjectDir).filter((x) => x.endsWith(".md"))) {
+      if (!wantedProject.has(f)) {
+        try {
+          unlinkSync2(join4(byProjectDir, f));
+        } catch {}
+      }
+    }
+    writeFileSync2(join4(vaultDir, "_health.md"), healthPage(memories, (id) => projectName.get(id) ?? "unknown"));
+  }
   writeFileSync2(indexPath, indexFile(byProject));
   return {
     memories_written: memories.length,
     files_removed: removed,
     vault_dir: vaultDir
   };
+}
+
+// src/curation.ts
+var TRUST_ORDER = ["observed", "validated", "proven", "canonical"];
+async function changeTrust(db, id, direction) {
+  const row = await db.execute({ sql: "SELECT trust FROM memories WHERE id = ?", args: [id] });
+  if (row.rows.length === 0)
+    return null;
+  const previous = row.rows[0].trust;
+  const idx = TRUST_ORDER.indexOf(previous);
+  if (idx < 0)
+    return null;
+  const nextIdx = Math.min(TRUST_ORDER.length - 1, Math.max(0, idx + direction));
+  const next = TRUST_ORDER[nextIdx];
+  if (next === previous)
+    return { id, previous, next, changed: false };
+  await db.execute({
+    sql: "UPDATE memories SET trust = ?, last_used = ? WHERE id = ?",
+    args: [next, Date.now(), id]
+  });
+  return { id, previous, next, changed: true };
+}
+function promoteMemory(db, id) {
+  return changeTrust(db, id, 1);
+}
+function demoteMemory(db, id) {
+  return changeTrust(db, id, -1);
+}
+async function tagMemory(db, id, tag) {
+  const exists = await db.execute({ sql: "SELECT 1 FROM memories WHERE id = ? LIMIT 1", args: [id] });
+  if (exists.rows.length === 0)
+    return false;
+  await db.execute({
+    sql: "INSERT OR IGNORE INTO memory_tags (memory_id, tag, created_at) VALUES (?, ?, ?)",
+    args: [id, tag.toLowerCase(), Date.now()]
+  });
+  return true;
+}
+async function untagMemory(db, id, tag) {
+  const result = await db.execute({
+    sql: "DELETE FROM memory_tags WHERE memory_id = ? AND tag = ?",
+    args: [id, tag.toLowerCase()]
+  });
+  return result.rowsAffected > 0;
+}
+async function grepMemories(db, projectId, pattern, limit = 50) {
+  const memories = await searchGrep(db, projectId, pattern, limit);
+  return memories.map((m) => ({
+    id: m.id,
+    project_id: m.project_id,
+    tier: m.tier,
+    category: m.category,
+    trust: m.trust,
+    weight: m.weight,
+    content: m.content
+  }));
+}
+function buildDeleteQuery(filters) {
+  if (filters.id) {
+    return { sql: "DELETE FROM memories WHERE id = ?", args: [filters.id] };
+  }
+  const where = [];
+  const args = [];
+  if (filters.project) {
+    where.push("project_id = ?");
+    args.push(filters.project);
+  }
+  if (filters.before) {
+    const ts = new Date(filters.before + "T23:59:59.999Z").getTime();
+    if (!Number.isFinite(ts)) {
+      throw new Error(`invalid --before date: ${filters.before} (expected YYYY-MM-DD)`);
+    }
+    where.push("created_at <= ?");
+    args.push(ts);
+  }
+  if (filters.grep) {
+    const pat = `%${filters.grep.replace(/[%_]/g, "\\$&")}%`;
+    where.push("(content LIKE ? ESCAPE '\\' OR COALESCE(context, '') LIKE ? ESCAPE '\\')");
+    args.push(pat, pat);
+  }
+  if (filters.tag) {
+    where.push("id IN (SELECT memory_id FROM memory_tags WHERE tag = ?)");
+    args.push(filters.tag.toLowerCase());
+  }
+  if (where.length === 0) {
+    throw new Error("at least one filter (--id, --project, --tag, --before, or --grep) is required");
+  }
+  return {
+    sql: `DELETE FROM memories WHERE ${where.join(" AND ")}`,
+    args
+  };
+}
+async function previewDeletion(db, filters, sampleSize = 5) {
+  const { sql, args } = buildDeleteQuery(filters);
+  const selectSql = sql.replace(/^DELETE FROM memories/, "SELECT * FROM memories");
+  const result = await db.execute({ sql: selectSql, args });
+  const sample = result.rows.slice(0, sampleSize).map((r) => ({
+    id: r.id,
+    project_id: r.project_id,
+    tier: r.tier,
+    category: r.category,
+    trust: r.trust,
+    weight: r.weight,
+    content: r.content
+  }));
+  return { count: result.rows.length, sample, sql, args };
+}
+async function applyDeletion(db, filters) {
+  const { sql, args } = buildDeleteQuery(filters);
+  const result = await db.execute({ sql, args });
+  await db.execute("DELETE FROM memory_tags WHERE memory_id NOT IN (SELECT id FROM memories)");
+  return result.rowsAffected;
 }
 
 // src/cli.ts
@@ -894,6 +1235,24 @@ switch (cmd) {
     break;
   case "export":
     await exportCmd();
+    break;
+  case "promote":
+    await promoteCmd(process.argv[3]);
+    break;
+  case "demote":
+    await demoteCmd(process.argv[3]);
+    break;
+  case "tag":
+    await tagCmd(process.argv[3], process.argv[4]);
+    break;
+  case "untag":
+    await untagCmd(process.argv[3], process.argv[4]);
+    break;
+  case "grep":
+    await grepCmd(process.argv.slice(3));
+    break;
+  case "delete":
+    await deleteCmd(process.argv.slice(3));
     break;
   case "backup":
     await backupCmd();
@@ -947,6 +1306,11 @@ switch (cmd) {
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
   │    export      Export memories to Obsidian vault │
+  │    promote     Promote a memory trust tier       │
+  │    demote      Demote a memory trust tier        │
+  │    tag/untag   Add/remove a tag                  │
+  │    grep        Substring search across memories  │
+  │    delete      Single or bulk delete (--id, etc) │
   │    install-hooks  Wire M6 hooks (PreCompact+)    │
   │    backup      Snapshot the DB                   │
   │    restore     Restore a snapshot                │
@@ -1241,6 +1605,139 @@ async function correctCmd(args) {
   console.log(`[apsolut-cortex] ✓ Flagged retrieval as a miss in ~/.apsolut-cortex/logs/corrections.jsonl`);
   if (!correctionText) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
+  }
+}
+async function promoteCmd(id) {
+  if (!id) {
+    console.log("[apsolut-cortex] usage: apsolut-cortex promote <memory-id>");
+    return;
+  }
+  const db = await getDb();
+  const result = await promoteMemory(db, id);
+  if (!result) {
+    console.log(`[apsolut-cortex] No memory found with id "${id}".`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!result.changed)
+    console.log(`[apsolut-cortex] Memory ${id} already at top trust tier (${result.previous}).`);
+  else
+    console.log(`[apsolut-cortex] ✓ Promoted ${id}: ${result.previous} → ${result.next}`);
+}
+async function demoteCmd(id) {
+  if (!id) {
+    console.log("[apsolut-cortex] usage: apsolut-cortex demote <memory-id>");
+    return;
+  }
+  const db = await getDb();
+  const result = await demoteMemory(db, id);
+  if (!result) {
+    console.log(`[apsolut-cortex] No memory found with id "${id}".`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!result.changed)
+    console.log(`[apsolut-cortex] Memory ${id} already at bottom trust tier (${result.previous}).`);
+  else
+    console.log(`[apsolut-cortex] ✓ Demoted ${id}: ${result.previous} → ${result.next}`);
+}
+async function tagCmd(id, tag) {
+  if (!id || !tag) {
+    console.log("[apsolut-cortex] usage: apsolut-cortex tag <memory-id> <tag>");
+    return;
+  }
+  const db = await getDb();
+  const ok = await tagMemory(db, id, tag);
+  if (!ok) {
+    console.log(`[apsolut-cortex] No memory found with id "${id}".`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`[apsolut-cortex] ✓ Tagged ${id} with "${tag.toLowerCase()}"`);
+}
+async function untagCmd(id, tag) {
+  if (!id || !tag) {
+    console.log("[apsolut-cortex] usage: apsolut-cortex untag <memory-id> <tag>");
+    return;
+  }
+  const db = await getDb();
+  const removed = await untagMemory(db, id, tag);
+  console.log(removed ? `[apsolut-cortex] ✓ Removed tag "${tag.toLowerCase()}" from ${id}` : `[apsolut-cortex] Tag "${tag.toLowerCase()}" was not on ${id}.`);
+}
+async function grepCmd(args) {
+  const pattern = args[0];
+  if (!pattern) {
+    console.log("[apsolut-cortex] usage: apsolut-cortex grep <pattern>");
+    return;
+  }
+  if (!existsSync6(PROJECT_CONFIG)) {
+    console.log("[apsolut-cortex] No project here. Run: apsolut-cortex init");
+    process.exitCode = 1;
+    return;
+  }
+  const project = JSON.parse(readFileSync3(PROJECT_CONFIG, "utf-8"));
+  const db = await getDb();
+  const hits = await grepMemories(db, project.id, pattern, 50);
+  if (hits.length === 0) {
+    console.log(`[apsolut-cortex] No matches for "${pattern}" in project ${project.name}.`);
+    return;
+  }
+  console.log(`[apsolut-cortex] ${hits.length} match(es) in ${project.name}:`);
+  for (const h of hits) {
+    const snippet = h.content.length > 100 ? h.content.slice(0, 97) + "..." : h.content;
+    console.log(`  ${h.id.slice(0, 8)}  [${h.trust}/${h.category}, w=${h.weight.toFixed(2)}]  ${snippet}`);
+  }
+}
+async function deleteCmd(args) {
+  const filters = {};
+  for (let i = 0;i < args.length; i++) {
+    const a = args[i];
+    if (a === "--id")
+      filters.id = args[++i];
+    else if (a === "--project")
+      filters.project = args[++i];
+    else if (a === "--tag")
+      filters.tag = args[++i];
+    else if (a === "--before")
+      filters.before = args[++i];
+    else if (a === "--grep")
+      filters.grep = args[++i];
+  }
+  const yes = args.includes("--yes");
+  if (!filters.id && !filters.project && !filters.tag && !filters.before && !filters.grep) {
+    console.log(`[apsolut-cortex] usage:`);
+    console.log(`  apsolut-cortex delete --id <memory-id>`);
+    console.log(`  apsolut-cortex delete --project <project-id> [--yes]`);
+    console.log(`  apsolut-cortex delete --tag <tag> [--yes]`);
+    console.log(`  apsolut-cortex delete --before YYYY-MM-DD [--yes]`);
+    console.log(`  apsolut-cortex delete --grep <pattern> [--yes]`);
+    console.log(`  (filters combine with AND. raw SQL is intentionally not accepted.)`);
+    return;
+  }
+  const db = await getDb();
+  try {
+    const preview = await previewDeletion(db, filters, 5);
+    if (preview.count === 0) {
+      console.log(`[apsolut-cortex] No memories match those filters.`);
+      return;
+    }
+    console.log(`[apsolut-cortex] Would delete ${preview.count} memor${preview.count === 1 ? "y" : "ies"}.`);
+    for (const m of preview.sample) {
+      const snippet = m.content.length > 80 ? m.content.slice(0, 77) + "..." : m.content;
+      console.log(`  ${m.id.slice(0, 8)}  [${m.trust}/${m.category}]  ${snippet}`);
+    }
+    if (preview.count > preview.sample.length)
+      console.log(`  ... and ${preview.count - preview.sample.length} more.`);
+    if (!yes) {
+      console.log(`
+[apsolut-cortex] Refusing to delete without --yes. Re-run the same command with --yes to proceed.`);
+      return;
+    }
+    const removed = await applyDeletion(db, filters);
+    console.log(`[apsolut-cortex] ✓ Deleted ${removed} memor${removed === 1 ? "y" : "ies"}.`);
+  } catch (e) {
+    console.log(`[apsolut-cortex] delete error: ${e instanceof Error ? e.message : e}`);
+    process.exitCode = 1;
   }
 }
 async function installHooksCmd(args) {

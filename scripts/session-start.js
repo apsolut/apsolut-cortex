@@ -232,11 +232,31 @@ var migration3 = {
 };
 var _003_raw_messages_default = migration3;
 
+// src/migrations/004-memory-tags.ts
+var migration4 = {
+  name: "004-memory-tags",
+  async up(client) {
+    await client.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS memory_tags (
+        memory_id   TEXT NOT NULL,
+        tag         TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, tag)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_tags_tag
+        ON memory_tags(tag, memory_id);
+    `);
+  }
+};
+var _004_memory_tags_default = migration4;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
-  _003_raw_messages_default
+  _003_raw_messages_default,
+  _004_memory_tags_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
