@@ -2,6 +2,28 @@
 
 > Paste this entire document as the first message to your AI coding agent (Claude Code, etc.) when starting Phase 2 work on `apsolut-cortex`.
 
+---
+
+## Status as of 2026-05-25 (v0.12.2)
+
+| Milestone | Status | Shipped in |
+|---|---|---|
+| M0 — Pre-flight (migration system, tests, docs scaffolding) | ✅ done | 0.5.7 |
+| M1 — Eval harness (hybrid + grep baseline + shadow mode) | ✅ done | 0.6.0 |
+| M2 — Retrieval audit log + `correct --with` bidirectional capture | ✅ done | 0.7.0 |
+| M3 — Encryption at rest + backup/restore (opt-in) | ✅ done | 0.8.0 |
+| M4 — Range-linked memories + `memory_recall` MCP tool | ✅ done | 0.9.0 |
+| M5 — Visibility layer (Obsidian export + curation CLI + compiled views) | ✅ done | 0.10.0 + 0.12.0 |
+| M6 — In-session compression (PreCompact + detached worker + reflector) | ✅ done (opt-in) | 0.11.0 |
+| M7 — Provider-agnostic routing (Vercel AI SDK + tiered routing) | ⏸ deferred | — needs your provider-key decisions |
+| M8 — Simplification pass + `audit` lint | ⏸ deferred | — premature; needs ≥30 days of eval signal first |
+
+Two Karpathy-inspired additions from the same review (folded into the milestone definitions below):
+- M1's `searchGrep` baseline lets us empirically test whether hybrid RAG earns its complexity at our scale.
+- M2's `--with` flag makes "label a miss" and "store the right answer" the same gesture.
+
+The original detailed milestone definitions follow unchanged for the historical record.
+
 ## What changed from v2
 
 A fact-check against the actual codebase surfaced corrections worth flagging up top:

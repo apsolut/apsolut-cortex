@@ -8,20 +8,43 @@ apsolut-cortex stores everything under `~/.apsolut-cortex/`. Single-machine, sin
 
 ```
 ~/.apsolut-cortex/
-├── memory.db          # libSQL database — primary store
+├── memory.db          # libSQL database — primary store (encrypted iff `db re-encrypt` was run)
+├── memory.db-wal      # libSQL WAL sidecar
+├── memory.db-shm      # libSQL shared-memory sidecar
 ├── registry.json      # project id → name + path index
-├── models/            # downloaded embedding model files
-├── logs/              # retrieval, shadow, router logs (jsonl)
-├── backup/            # snapshots (filled in by M3)
-├── buffer/            # in-flight compression spill (filled in by M6)
-└── obsidian/          # markdown export (filled in by M5)
+├── compression-state.json  # circuit-breaker state for the compression pipeline
+├── models/            # downloaded embedding model files (Xenova/all-MiniLM-L6-v2, ~90 MB)
+├── logs/              # retrievals.jsonl + corrections.jsonl + shadow.jsonl
+├── backup/            # manual + pre-encrypt + pre-restore snapshots
+├── buffer/            # per-session compression lock + cursor (M6)
+└── obsidian/          # generated vault — see below
+    ├── index.md           # TOC, grouped by project → category
+    ├── _health.md         # curation hints (promote/demote candidates, flagged)
+    ├── memories/          # one .md per memory (frontmatter + body + tag links)
+    ├── by-category/       # one .md per category, sorted by weight
+    └── by-project/        # one .md per project, grouped by category
 ```
+
+The vault under `obsidian/` is fully regenerable from `memory.db` and is overwritten on every export — treat it as output, not state.
 
 ## Schema
 
-Tables: `projects`, `sessions`, `observations`, `memories`, `memories_fts` (FTS5 virtual table over `memories`), `file_hashes`, and `_migrations` (schema version tracking).
+Tables (current as of M6 + M5 rest):
 
-Schema is defined in `src/migrations/*.ts`. Run `apsolut-cortex migrate` to apply pending migrations. See [OPERATIONS.md](OPERATIONS.md#migrations).
+| Table | Origin | Purpose |
+|---|---|---|
+| `_migrations` | M0 runner | Schema version tracking |
+| `_migrations_lock` | M0 runner | Sentinel-row advisory lock during `runMigrations` |
+| `projects` | 001 | Project registry (id, name, path) |
+| `sessions` | 001 | One row per Claude Code session |
+| `observations` | 001 | Raw signals captured by hooks (tool failures, file reads, corrections) before compression |
+| `memories` | 001, extended by 002 | Compressed memories. M4 added `source_session_id` / `source_start_msg_idx` / `source_end_msg_idx` for `memory_recall`. |
+| `memories_fts` | 001 | FTS5 virtual table over `memories` (porter ascii) |
+| `file_hashes` | 001 | Per-project config-file hashes for change detection between sessions |
+| `raw_messages` | 003 | Append-only transcript slices, indexed by `(session_id, msg_idx)`. Populated by M6 hooks; `memory_recall` reads from here. |
+| `memory_tags` | 004 | M5 user-applied tags. Composite PK `(memory_id, tag)`, lowercased. Cascaded on memory delete. |
+
+Migration files live in `src/migrations/NNN-name.ts` and are registered in `src/migrations/runner.ts`. Run `apsolut-cortex migrate` to apply pending migrations explicitly; they also run automatically on every CLI/MCP startup. See [OPERATIONS.md](OPERATIONS.md#migrations).
 
 ## Multi-machine / Turso cloud migration path
 

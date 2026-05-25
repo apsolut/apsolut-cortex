@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.3] – 2026-05-25
+
+### Changed (docs only)
+- **README.md** — `## Commands` rewritten to list every shipped subcommand grouped by purpose (setup / daily / curation / ops / eval). MCP tools table gained `memory_recall`. "How it works" gained the M6 in-session + reflector + auto-export bullets. Storage layout shows `logs/`, `obsidian/`, `buffer/`, `backup/`. Configuration section lists the M6 (`OBSERVE_THRESHOLD`, `OBSERVE_BLOCK_MULT`, `REFLECT_THRESHOLD`), M4 (`RAW_RETENTION_DAYS`), and M1 (`SHADOW`) env vars.
+- **docs/CONFIG.md** — full env var reference rebuilt; ~21 vars grouped by concern with defaults inline.
+- **docs/OPERATIONS.md** — added `## Hook setup` (legacy vs M6 `install-hooks`), `## Curation` (M5 promote/demote/tag/grep/delete/correct), `## Vault export` (M5 obsidian flow).
+- **docs/STORAGE.md** — directory layout now shows every dir cortex writes to; schema section lists every table with origin migration and purpose (added `raw_messages`, `memory_tags`, `_migrations`, `_migrations_lock`).
+- **docs/PHASE2-BUILD-ORDER.md** — added a status table at the top showing M0–M6 done and which version each shipped in, M7/M8 deferred with reasons.
+
 ## [0.12.2] – 2026-05-25
 
 ### Security
@@ -184,7 +193,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.11.0...v0.12.0

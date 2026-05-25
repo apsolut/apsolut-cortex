@@ -4,6 +4,17 @@ Runbook for day-to-day operation of apsolut-cortex on a development machine.
 
 > **Path invariant:** all data lives under `~/.apsolut-cortex/`. `~/.apsolut/` (without the `-cortex` suffix) is **reserved for other `apsolut-*` tools** and must never be touched by this plugin.
 
+## Hook setup
+
+Two installable hook sets — pick one. `init` is the safe default for everyone; `install-hooks` is the M6 opt-in upgrade for power users.
+
+```bash
+apsolut-cortex init                 # legacy hook set: SessionStart + PostToolUse + Stop + SessionEnd
+apsolut-cortex install-hooks        # M6 set: adds PreCompact + token-budget background worker
+```
+
+`install-hooks` is idempotent — it strips any prior cortex entry in `~/.claude/settings.json` before adding the M6 commands, and leaves other tools' hooks alone. Restart Claude Code for the change to take effect.
+
 ## Migrations
 
 Run pending schema migrations:
@@ -48,6 +59,38 @@ Once encryption is enabled, **deleting the keychain entry destroys access to you
 ## Nightly snapshots
 
 > Cron / Task Scheduler entries: not wired automatically yet. To schedule manual snapshots, run `apsolut-cortex backup` on a schedule via Windows Task Scheduler or WSL cron. Rotation (7 daily / 4 weekly / 3 monthly) is a planned later feature.
+
+## Curation (M5)
+
+Individual memory hygiene from the terminal — no need to touch sqlite3:
+
+```bash
+apsolut-cortex grep <pattern>           # substring search across this project
+apsolut-cortex promote <id>             # walk trust tier: observed → validated → proven → canonical
+apsolut-cortex demote <id>              # walk it back down
+apsolut-cortex tag <id> <tag>           # free-form labels (lowercased, deduped)
+apsolut-cortex untag <id> <tag>
+apsolut-cortex correct                  # flag the most recent retrieval as a miss
+apsolut-cortex correct --with "answer"  # …and store the fix as a linked memory (M2)
+
+# Bulk delete (every filter shows a preview and refuses without --yes)
+apsolut-cortex delete --id <id>
+apsolut-cortex delete --project <project-id> --yes
+apsolut-cortex delete --tag <name> --yes
+apsolut-cortex delete --before YYYY-MM-DD --yes
+apsolut-cortex delete --grep <pattern> --yes
+# filters combine with AND. raw SQL is intentionally not accepted.
+```
+
+## Vault export (M5)
+
+The Obsidian-friendly markdown vault regenerates on every `SessionEnd`; you can also run it on demand:
+
+```bash
+apsolut-cortex export                   # writes ~/.apsolut-cortex/obsidian/
+```
+
+Layout — see [STORAGE.md](STORAGE.md#directory-layout) for full detail. Open `~/.apsolut-cortex/obsidian/` as an Obsidian vault to browse, then use the `_health.md` page to spot memories that need `promote` / `demote`.
 
 ## Audit (lint pass)
 

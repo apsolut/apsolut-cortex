@@ -71,8 +71,14 @@ Everything is automatic. Hooks fire on every Claude Code session:
 **At session end:**
 - Observations compressed into memories via Claude Haiku
 - Fallback: Ollama if no API key
-- Session summary stored for continuity
+- Final transcript slice persisted to `raw_messages` so `memory_recall` can return real history
+- Reflector pass consolidates large sessions into denser meta-memories
 - Stale memories decay, low-value ones pruned over time
+- Vault auto-export to `~/.apsolut-cortex/obsidian/` (browseable in Obsidian)
+
+**In-session (opt-in via `apsolut-cortex install-hooks`):**
+- Token budget exceeded → detached background worker compresses mid-session, never blocks tool execution
+- `PreCompact` event → synchronous safety capture right before Claude Code compacts its own context
 
 **On demand (slash commands):**
 - `/apsolut-recall <topic>` — search memory
@@ -91,6 +97,7 @@ Everything is automatic. Hooks fire on every Claude Code session:
 | `memory_rate(id, score)` | After using a retrieved memory (0–3) |
 | `memory_contradict(id, correction?)` | When a memory is wrong |
 | `memory_status()` | Overview of what's stored |
+| `memory_recall(id)` | Need exact wording / chronology a memory was derived from (M4) |
 
 ---
 
@@ -116,10 +123,50 @@ Override host: `OLLAMA_HOST=http://localhost:11434`
 
 ## Commands
 
+**Setup**
 ```bash
-apsolut-cortex init        # set up memory for this project
-apsolut-cortex status      # show what's stored
-apsolut-cortex uninstall   # remove hooks and MCP config
+apsolut-cortex init             # set up memory for this project (legacy hook set)
+apsolut-cortex install-hooks    # opt in to M6 hooks (PreCompact + token-budget worker)
+apsolut-cortex uninstall        # remove hooks and MCP config (DB kept)
+```
+
+**Daily**
+```bash
+apsolut-cortex status           # show what's stored
+apsolut-cortex grep <pattern>   # substring search across this project's memories
+apsolut-cortex export           # write the Obsidian vault now (runs auto on SessionEnd too)
+apsolut-cortex correct          # flag the most recent retrieval as a miss
+apsolut-cortex correct --with "the correct answer"  # …and store the fix as a new memory
+```
+
+**Curation (M5)**
+```bash
+apsolut-cortex promote <id>             # walk trust tier: observed → … → canonical
+apsolut-cortex demote <id>              # walk it back down
+apsolut-cortex tag <id> <tag>           # apply a free-form label
+apsolut-cortex untag <id> <tag>
+apsolut-cortex delete --id <id>
+apsolut-cortex delete --project <id> --yes
+apsolut-cortex delete --tag <name> --yes
+apsolut-cortex delete --before YYYY-MM-DD --yes
+apsolut-cortex delete --grep <pattern> --yes
+# all bulk deletes show a preview and refuse without --yes
+```
+
+**Ops (M3)**
+```bash
+apsolut-cortex migrate                  # apply pending schema migrations
+apsolut-cortex backup                   # snapshot DB under ~/.apsolut-cortex/backup/
+apsolut-cortex restore                  # list snapshots
+apsolut-cortex restore <path> --yes     # restore (writes safety snapshot first)
+apsolut-cortex db re-encrypt            # dry-run encryption migration plan
+apsolut-cortex db re-encrypt --yes      # opt in to libSQL-native encryption at rest
+```
+
+**Eval (maintainer-only, run from a cloned repo)**
+```bash
+apsolut-cortex eval run                 # score hybrid vs grep retrieval against golden.jsonl
+apsolut-cortex eval baseline            # snapshot scores for delta tracking
 ```
 
 ---
@@ -130,7 +177,11 @@ apsolut-cortex uninstall   # remove hooks and MCP config
 ~/.apsolut-cortex/
   ├── memory.db       ← all memories, all projects, libSQL (Turso's SQLite fork)
   ├── registry.json   ← project registry
-  └── models/         ← embedding model cache (downloads once)
+  ├── models/         ← embedding model cache (downloads once)
+  ├── logs/           ← retrievals.jsonl, corrections.jsonl, shadow.jsonl
+  ├── obsidian/       ← exported vault (regenerated on SessionEnd)
+  ├── buffer/         ← per-session compression lock + cursor (M6)
+  └── backup/         ← manual + pre-encrypt + pre-restore snapshots
 ```
 
 All projects share one DB, namespaced by project UUID.
@@ -140,7 +191,7 @@ for session compression.
 The on-disk format is libSQL — fully SQLite-compatible at the file level
 (any `sqlite3` CLI can read it), with the option to migrate to Turso cloud
 later by changing the connection URL alone. See [docs/STORAGE.md](docs/STORAGE.md)
-for the migration path.
+for the migration path and the full schema reference.
 
 ---
 
@@ -183,6 +234,15 @@ All env vars use the `APSOLUT_CORTEX_` prefix. Defaults work well out of the box
 - `APSOLUT_CORTEX_CORRECTION_WEIGHT` — `1.5` — initial weight for corrections
 - `APSOLUT_CORTEX_MANUAL_WEIGHT` — `1.2` — initial weight for manual stores
 
-**Compression**
+**Compression (legacy + M6)**
 - `APSOLUT_CORTEX_OLLAMA_MODEL` — `qwen2.5-coder:7b` — Ollama model
 - `OLLAMA_HOST` — `http://localhost:11434` — Ollama server URL
+- `APSOLUT_CORTEX_OBSERVE_THRESHOLD` — `30000` — conversation tokens that fire a background compression run (M6)
+- `APSOLUT_CORTEX_OBSERVE_BLOCK_MULT` — `1.2` — synchronous compression kicks in at `THRESHOLD × this` as a safety net (M6)
+- `APSOLUT_CORTEX_REFLECT_THRESHOLD` — `40000` — re-summarize a session's memories into denser reflections above this token count (M6)
+
+**Range-linked memories (M4)**
+- `APSOLUT_CORTEX_RAW_RETENTION_DAYS` — `90` — days to keep `raw_messages` rows before cleanup (cleanup job pending M8's `is_pinned`)
+
+**Eval (M1)**
+- `APSOLUT_CORTEX_SHADOW` — `false` — when truthy, `memory_search` logs would-have-been-injected matches to `~/.apsolut-cortex/logs/shadow.jsonl` without returning anything to Claude
