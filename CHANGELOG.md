@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.4] – 2026-05-25
+
+### Changed (docs only)
+- **README** — added a new "Stability notes" section after the roadmap, flagging M3 encryption as **work-in-progress / experimental** (the keychain backend is platform-fragile on WSL2 and a file-based key fallback is not yet shipped; key loss = data loss). M3 roadmap line demoted from `[x]` to `[~]` with an inline ⚠ marker pointing at the new section. Same section also flags M6 as new + opt-in, the sparse eval signal, and the deferred M7/M8.
+- Renamed sibling-project link from `apsolut-scaffolding` to **`apsolut-seshat`** (project was renamed upstream 2026-05-25).
+
 ## [0.12.3] – 2026-05-25
 
 ### Changed (docs only)
@@ -193,7 +199,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.4...HEAD
+[0.12.4]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.0...v0.12.1

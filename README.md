@@ -5,7 +5,7 @@ Persistent memory for Claude Code projects.
 Stores corrections, decisions, and patterns across sessions so Claude stops
 repeating the same mistakes and forgetting what you decided last week.
 
-> Standalone — works on its own. Optional pairing: [apsolut-scaffolding](https://github.com/apsolut/apsolut-scaffolding) for a per-project markdown vault you curate by hand.
+> Standalone — works on its own. Optional pairing: [apsolut-seshat](https://github.com/apsolut/apsolut-seshat) for a per-project markdown vault you curate by hand.
 
 ---
 
@@ -14,7 +14,7 @@ repeating the same mistakes and forgetting what you decided last week.
 - [x] **M0 — Pre-flight (done):** namespace fixed to `~/.apsolut-cortex/` ✅ (`~/.apsolut/` is reserved for other `apsolut-*` tools and must never be used here), `bun:test` wired with smoke tests, migration system (`src/migrations/` + `_migrations` table + `apsolut-cortex migrate`), `CHANGELOG.md`, `docs/` scaffolding (OPERATIONS, STORAGE, PROVIDERS, CONFIG, OLLAMA, decisions/)
 - [x] **M1 — Eval harness (done):** `evals/golden.jsonl` (5 seeded entries, target 30), reproducible fixture DB via `evals/fixtures/seed.ts`, `apsolut-cortex eval run` + `eval baseline` CLI, hybrid + grep retrieval scored side-by-side (Karpathy provocation testable), shadow mode (`APSOLUT_CORTEX_SHADOW=true` logs to `~/.apsolut-cortex/logs/shadow.jsonl` without injection)
 - [x] **M2 — Retrieval audit log (done):** JSONL retrieval logging (`~/.apsolut-cortex/logs/retrievals.jsonl`) with per-source ranks, `apsolut-cortex correct [--with "<answer>"]` flags the last retrieval as a miss and (with `--with`) stores the correction as a linked memory in one gesture
-- [x] **M3 — Encryption + backup (opt-in):** libSQL-native encryption via `apsolut-cortex db re-encrypt`, key stored in OS keychain (Windows Credential Manager / macOS Keychain / libsecret), `apsolut-cortex backup` / `restore` commands with pre-restore safety snapshot, pre-encrypt backup never deleted. Nightly rotation deferred (run `backup` from cron/Task Scheduler manually for now).
+- [~] **M3 — Encryption + backup (opt-in, experimental):** libSQL-native encryption via `apsolut-cortex db re-encrypt`, key stored in OS keychain (Windows Credential Manager / macOS Keychain / libsecret), `apsolut-cortex backup` / `restore` commands with pre-restore safety snapshot, pre-encrypt backup never deleted. Nightly rotation deferred (run `backup` from cron/Task Scheduler manually for now). ⚠ **Treat encryption as work-in-progress until further notice** — see [Stability notes](#stability-notes) below before enabling on data you can't afford to lose.
 - [x] **M4 — Range-linked memories (done):** migrations 002 + 003 add nullable `source_session_id` / `source_start_msg_idx` / `source_end_msg_idx` columns to `memories` plus a `raw_messages` append-only table. New MCP tool `memory_recall(id)` returns the raw conversation slice for a compressed memory (or a clear "predates source tracking" / "pruned by retention" message). Compression hook (M6) will populate the source ranges going forward.
 - [x] **M5 — Visibility layer (done):** `apsolut-cortex export` writes one markdown file per memory to `~/.apsolut-cortex/obsidian/memories/` plus compiled views (`index.md`, `by-category/<cat>.md`, `by-project/<name>.md`, `_health.md` with curation hints). Auto-export on `SessionEnd`. Curation CLI: `promote` / `demote` (walk trust tiers), `tag` / `untag` (free-form labels via new `memory_tags` table), `grep <pattern>` (substring search in this project), `delete --id|--project|--tag|--before|--grep [--yes]` with mandatory preview + confirmation. Inter-memory wiki-links (Karpathy "linking through the wiki") deferred — heuristic is fiddly and risks false positives; tags + categories give us most of the linking value already.
 - [x] **M6 — In-session compression (done, opt-in):** token-budget-triggered `PostToolUse` observer (detached background worker, single-flight per session), `PreCompact` synchronous safety capture, reflector layer that consolidates large sessions into denser memories at `SessionEnd`, full transcript persisted to `raw_messages` so `memory_recall` now returns real history. Wired via `apsolut-cortex install-hooks` (existing `init` keeps the legacy SessionEnd-only hooks).
@@ -22,6 +22,17 @@ repeating the same mistakes and forgetting what you decided last week.
 - [ ] **M8 — Simplification pass:** env var audit, trust tier collapse (4 → 2), taxonomy audit
 
 > Full plan: [docs/PHASE2-BUILD-ORDER.md](docs/PHASE2-BUILD-ORDER.md)
+
+## Stability notes
+
+cortex is in active Phase 2 development. Most surface area is solid; a few pieces ship but are still being hardened:
+
+- **Encryption (M3) — work in progress.** Opt-in only; default is plaintext. Works cleanly on **Windows** (Credential Manager) and **macOS** (Keychain). **WSL2** needs `gnome-keyring-daemon` running with the `secrets` component — without it, the keychain read throws and the DB falls back to plaintext. No file-based key fallback yet ([planned](docs/PHASE2-BUILD-ORDER.md)). **Key loss = data loss:** if you delete the keychain entry without exporting the key first, the DB is unreadable. Always run `apsolut-cortex backup` before enabling.
+- **In-session compression (M6) — opt-in, new.** The token-budget background worker + `PreCompact` hooks land in 0.11.0+ but have only been smoke-tested on a single Windows machine. If a long session ends with stuck buffer files under `~/.apsolut-cortex/buffer/`, `apsolut-cortex migrate` clears the lock on next start; if compression itself fails the session-end fallback still captures everything.
+- **Eval signal — sparse.** The harness ships with 5 seed entries; the "is hybrid retrieval worth it?" question won't have a defensible answer until that grows to 20+ entries with paraphrased queries. The hybrid stack is the default until then.
+- **M7 (provider routing) and M8 (simplification + audit) — deferred.** Compression is hardcoded to Anthropic Haiku → Ollama fallback for now. The 4-tier trust ladder hasn't been collapsed yet.
+
+If you're using cortex on a single dev machine with backups, none of this is alarming. If you're considering it for a higher-stakes setting, wait for a 1.0 cut.
 
 ---
 
