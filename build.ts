@@ -17,6 +17,7 @@ const external = [
   "@anthropic-ai/sdk",
   "@modelcontextprotocol/sdk",
   "@napi-rs/keyring",
+  "gpt-tokenizer",
 ];
 
 const externalFlags = external.flatMap(p => ["--external", p]);

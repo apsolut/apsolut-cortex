@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.1] – 2026-05-25
+
+### Fixed
+- **Tarball size:** `gpt-tokenizer` (added in 0.11.0 for M6 token counting) was not in `build.ts`'s external list and got bundled into every hook script — pushed the published tarball from ~30 KB to **4.2 MB**. Added to externals; tarball back down to ~73 KB.
+
 ## [0.12.0] – 2026-05-25
 
 ### Added
@@ -174,7 +179,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.9.0...v0.10.0

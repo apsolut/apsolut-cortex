@@ -1,6 +1,6 @@
 {
   "name": "apsolut-cortex",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Persistent memory for Claude Code projects — stores corrections, decisions, and patterns across sessions",
   "type": "module",
   "bin": {
