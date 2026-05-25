@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.6] – 2026-05-25
+
+### Changed
+- Version-only bump. No functional or doc changes vs. 0.12.5; this release exists so the published npm package can be refreshed. Tarball contents are byte-identical apart from `package.json`'s `version` field and this CHANGELOG entry.
+
 ## [0.12.5] – 2026-05-25
 
 ### Added
@@ -210,7 +215,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.5...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.6...HEAD
+[0.12.6]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.2...v0.12.3
