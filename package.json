@@ -1,6 +1,6 @@
 {
   "name": "apsolut-cortex",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Persistent memory for Claude Code projects — stores corrections, decisions, and patterns across sessions",
   "type": "module",
   "bin": {
@@ -44,7 +44,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.88.0",
+    "@anthropic-ai/sdk": "^0.91.1",
     "@huggingface/transformers": "3.8.1",
     "@libsql/client": "^0.17.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
