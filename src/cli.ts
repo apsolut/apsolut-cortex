@@ -60,10 +60,13 @@ switch (cmd) {
   case "db":                 await dbCmd(process.argv[3], process.argv.slice(4)); break;
   case "eval":               await evalCmd(process.argv[3]); break;
   case "uninstall":          uninstall(); break;
-  case "hook:session-start": await runHook("session-start"); break;
-  case "hook:post-tool-use": await runHook("post-tool-use"); break;
-  case "hook:stop":          await runHook("stop"); break;
-  case "hook:session-end":   await runHook("session-end"); break;
+  case "hook:session-start":   await runHook("session-start"); break;
+  case "hook:post-tool-use":   await runHook("post-tool-use"); break;
+  case "hook:stop":            await runHook("stop"); break;
+  case "hook:session-end":     await runHook("session-end"); break;
+  case "hook:pre-compact":     await runHook("pre-compact"); break;
+  case "hook:compress-worker": await runHook("compress-worker"); break;
+  case "install-hooks":        await installHooksCmd(process.argv.slice(3)); break;
   case "help": case "--help": case "-h":
   default:
     console.log(`
@@ -78,6 +81,7 @@ switch (cmd) {
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
   │    export      Export memories to Obsidian vault │
+  │    install-hooks  Wire M6 hooks (PreCompact+)    │
   │    backup      Snapshot the DB                   │
   │    restore     Restore a snapshot                │
   │    db re-encrypt  Migrate DB to encrypted        │
@@ -440,6 +444,73 @@ async function correctCmd(args: string[]) {
   if (!correctionText) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
   }
+}
+
+// ── Install hooks (M6) ────────────────────────────────────────────────────────
+
+/**
+ * Wire the M6 hook set (SessionStart + PostToolUse + Stop + SessionEnd +
+ * PreCompact) into ~/.claude/settings.json. Opt-in upgrade from the
+ * legacy `init`-installed set, which lacks PreCompact and the token-
+ * budget trigger.
+ *
+ * Idempotent — re-running just normalizes the existing entries to the
+ * M6 commands and leaves non-cortex hooks alone.
+ */
+async function installHooksCmd(args: string[]) {
+  const template = IS_DIST
+    ? join(PACKAGE_ROOT, "templates", "hooks-m6.json")
+    : join(PACKAGE_ROOT, "templates", "hooks-m6.json");
+
+  if (!existsSync(template)) {
+    console.log(`[apsolut-cortex] template missing: ${template}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const tmpl = JSON.parse(readFileSync(template, "utf-8")) as Record<string, unknown>;
+  const m6Events = ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"];
+
+  // For non-installed (dev) usage, the command is `bun run path/to/cli.ts`
+  // rather than the global binary. install-hooks always assumes the user
+  // installed via npm; warn but proceed in dev mode.
+  if (!IS_DIST && !args.includes("--force")) {
+    console.log(`[apsolut-cortex] install-hooks is intended for npm-installed users.`);
+    console.log(`[apsolut-cortex] In dev mode, run with --force if you really want to wire`);
+    console.log(`[apsolut-cortex] the M6 hook set assuming apsolut-cortex is on PATH.`);
+    return;
+  }
+
+  let settings: Record<string, unknown> = {};
+  const settingsDir = dirname(CLAUDE_SETTINGS);
+  if (!existsSync(settingsDir)) mkdirSync(settingsDir, { recursive: true });
+  if (existsSync(CLAUDE_SETTINGS)) {
+    try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8")); } catch {}
+  }
+
+  const existingHooks = (settings.hooks as Record<string, unknown[]>) ?? {};
+
+  for (const event of m6Events) {
+    const tmplEntries = (tmpl[event] as unknown[]) ?? [];
+    const current = (existingHooks[event] ?? []) as unknown[];
+
+    // Strip any prior cortex entry so we don't accumulate duplicates.
+    const otherTools = current.filter((e: any) => {
+      if (typeof e !== "object") return true;
+      if (Array.isArray(e.hooks)) {
+        return !e.hooks.some((h: any) => h.command?.includes("apsolut-cortex"));
+      }
+      return !e.command?.includes("apsolut-cortex");
+    });
+
+    existingHooks[event] = [...otherTools, ...tmplEntries];
+  }
+
+  settings.hooks = existingHooks;
+  writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
+  console.log(`[apsolut-cortex] ✓ Installed M6 hooks into ${CLAUDE_SETTINGS}`);
+  console.log(`[apsolut-cortex]   Events wired: ${m6Events.join(", ")}`);
+  console.log(`[apsolut-cortex]   Restart any open Claude Code session for the new hooks to apply.`);
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────

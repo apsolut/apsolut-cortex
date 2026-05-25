@@ -9,10 +9,9 @@ var __export = (target, all) => {
     });
 };
 
-// src/hooks/session-end.ts
-import { readFileSync as readFileSync4, existsSync as existsSync6 } from "fs";
-import { createHash } from "crypto";
-import { join as join5 } from "path";
+// src/hooks/pre-compact.ts
+import { readFileSync as readFileSync4, existsSync as existsSync5 } from "fs";
+import { join as join4 } from "path";
 
 // src/db.ts
 import { createClient } from "@libsql/client";
@@ -48,50 +47,6 @@ var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
 var CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
 var CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
 var CORTEX_REFLECT_THRESHOLD = envNum("APSOLUT_CORTEX_REFLECT_THRESHOLD", 40000);
-var TRACKED_FILES = [
-  "package.json",
-  "tsconfig.json",
-  "tsconfig.base.json",
-  ".env",
-  ".env.local",
-  "cargo.toml",
-  "pyproject.toml",
-  "go.mod",
-  "composer.json",
-  "Gemfile",
-  "bun.lock",
-  "bunfig.toml",
-  "deno.json",
-  "deno.jsonc",
-  "vite.config.ts",
-  "vite.config.js",
-  "vite.config.mjs",
-  "webpack.config.js",
-  "webpack.config.ts",
-  "next.config.js",
-  "next.config.ts",
-  "next.config.mjs",
-  ".eslintrc.json",
-  ".eslintrc.js",
-  "eslint.config.js",
-  "eslint.config.mjs",
-  ".prettierrc",
-  ".prettierrc.json",
-  "biome.json",
-  "biome.jsonc",
-  "tailwind.config.js",
-  "tailwind.config.ts",
-  "drizzle.config.ts",
-  "drizzle.config.js",
-  "docker-compose.yml",
-  "docker-compose.yaml",
-  "Dockerfile",
-  "turbo.json",
-  "nx.json",
-  "lerna.json",
-  "Makefile",
-  "justfile"
-];
 
 // src/migrations/001-initial-schema.ts
 var migration = {
@@ -402,35 +357,6 @@ async function upsertSession(db, s) {
     });
   }
 }
-async function getSessionObservations(db, sessionId) {
-  const result = await db.execute({
-    sql: "SELECT tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
-    args: [sessionId]
-  });
-  return result.rows.map((r) => ({
-    tool_name: r.tool_name,
-    content: r.content,
-    category: r.category
-  }));
-}
-async function getUnprocessedObservations(db, projectId, excludeSessionId) {
-  const result = await db.execute({
-    sql: "SELECT tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT 50",
-    args: [projectId, excludeSessionId]
-  });
-  return result.rows.map((r) => ({
-    tool_name: r.tool_name,
-    content: r.content,
-    category: r.category,
-    session_id: r.session_id
-  }));
-}
-async function markProjectObservationsPromoted(db, projectId) {
-  await db.execute({
-    sql: "UPDATE observations SET promoted = 1 WHERE project_id = ? AND promoted = 0",
-    args: [projectId]
-  });
-}
 async function findDuplicate(db, projectId, embedding, threshold = CORTEX_DUPLICATE_THRESHOLD) {
   const maxDistance = 1 - threshold;
   const result = await db.execute({
@@ -562,51 +488,22 @@ var GREP_STOP_WORDS = new Set([
   "with",
   "you"
 ]);
-async function decayAndPrune(db, projectId) {
-  const cutoff = Date.now() - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
-  const decayResult = await db.execute({
-    sql: `UPDATE memories
-          SET weight = weight * CASE
-            WHEN trust IN ('proven', 'canonical') THEN 1.0
-            WHEN trust = 'validated' THEN ?
-            ELSE ?
-          END
-          WHERE project_id = ?
-            AND trust NOT IN ('canonical')
-            AND (last_used IS NULL OR last_used < ?)`,
-    args: [CORTEX_DECAY_VALIDATED, CORTEX_DECAY_OBSERVED, projectId, cutoff]
-  });
-  const pruneResult = await db.execute({
-    sql: `DELETE FROM memories
-          WHERE project_id = ? AND weight < ?
-            AND trust NOT IN ('proven', 'canonical')`,
-    args: [projectId, CORTEX_PRUNE_WEIGHT]
-  });
-  return {
-    decayed: decayResult.rowsAffected,
-    pruned: pruneResult.rowsAffected
-  };
+
+// src/embed.ts
+import { pipeline, env } from "@huggingface/transformers";
+env.cacheDir = MODELS_DIR;
+env.allowRemoteModels = true;
+var _embedder = null;
+async function getEmbedder() {
+  if (_embedder)
+    return _embedder;
+  _embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+  return _embedder;
 }
-async function snapshotFileHashes(db, projectId, hashes) {
-  const now = Date.now();
-  await db.batch(hashes.map((h) => ({
-    sql: "INSERT OR REPLACE INTO file_hashes (project_id, path, hash, updated_at) VALUES (?, ?, ?, ?)",
-    args: [projectId, h.path, h.hash, now]
-  })), "write");
-}
-async function diffFileHashes(db, projectId, currentHashes) {
-  const changed = [];
-  for (const cur of currentHashes) {
-    const result = await db.execute({
-      sql: "SELECT hash FROM file_hashes WHERE project_id = ? AND path = ?",
-      args: [projectId, cur.path]
-    });
-    const prev = result.rows[0];
-    if (!prev || prev.hash !== cur.hash) {
-      changed.push(cur.path);
-    }
-  }
-  return changed;
+async function embed(text) {
+  const e = await getEmbedder();
+  const out = await e(text, { pooling: "mean", normalize: true });
+  return out.data;
 }
 
 // src/compress.ts
@@ -788,227 +685,34 @@ async function compressSession(observations, project) {
   }
 }
 
-// src/embed.ts
-import { pipeline, env } from "@huggingface/transformers";
-env.cacheDir = MODELS_DIR;
-env.allowRemoteModels = true;
-var _embedder = null;
-async function getEmbedder() {
-  if (_embedder)
-    return _embedder;
-  _embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
-  return _embedder;
-}
-async function embed(text) {
-  const e = await getEmbedder();
-  const out = await e(text, { pooling: "mean", normalize: true });
-  return out.data;
-}
-
-// src/export.ts
+// src/buffer.ts
 import {
+  appendFileSync,
   existsSync as existsSync3,
   mkdirSync as mkdirSync2,
+  readFileSync as readFileSync2,
   readdirSync,
+  statSync,
   unlinkSync,
   writeFileSync as writeFileSync2
 } from "fs";
 import { join as join3 } from "path";
-var OBSIDIAN_DIR = join3(CORTEX_DIR, "obsidian");
-var MEMORIES_DIR = join3(OBSIDIAN_DIR, "memories");
-var INDEX_PATH = join3(OBSIDIAN_DIR, "index.md");
-var GENERATED_HEADER = "<!-- generated by apsolut-cortex export — do not edit; changes will be overwritten -->";
-function isoDate(ms) {
-  return new Date(ms).toISOString();
-}
-function memoryFilename(m, projectName) {
-  const idShort = m.id.slice(0, 8);
-  const slug = m.content.slice(0, 50).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
-  const safe = slug.length > 0 ? slug : "memory";
-  return `${idShort}-${safe}.md`;
-}
-function frontmatter(m, projectName) {
-  const fields = [
-    ["id", m.id],
-    ["project", projectName],
-    ["project_id", m.project_id],
-    ["tier", m.tier],
-    ["category", m.category],
-    ["trust", m.trust],
-    ["weight", m.weight.toFixed(3)],
-    ["used_count", m.used_count],
-    ["created_at", isoDate(m.created_at)],
-    ["last_used", m.last_used ? isoDate(m.last_used) : null],
-    ["source", m.source],
-    ["source_session_id", m.source_session_id]
-  ];
-  const lines = ["---"];
-  for (const [k, v] of fields) {
-    if (v === null || v === undefined)
-      continue;
-    const safeValue = String(v).replace(/"/g, "\\\"");
-    lines.push(`${k}: "${safeValue}"`);
-  }
-  lines.push("---");
-  return lines.join(`
-`);
-}
-function memoryFile(m, projectName) {
-  const wikiProject = `[[${projectName}]]`;
-  const wikiCategory = `[[category-${m.category}]]`;
-  const bodyParts = [
-    frontmatter(m, projectName),
-    "",
-    GENERATED_HEADER,
-    "",
-    `# ${m.category} · ${m.tier}`,
-    "",
-    m.content
-  ];
-  if (m.context) {
-    bodyParts.push("", "## Context", "", m.context);
-  }
-  bodyParts.push("", "---", `Project: ${wikiProject} · Category: ${wikiCategory} · Trust: ${m.trust}`);
-  return bodyParts.join(`
-`) + `
-`;
-}
-function indexFile(memoriesByProject) {
-  const lines = [
-    "---",
-    `generated_at: "${new Date().toISOString()}"`,
-    "---",
-    "",
-    GENERATED_HEADER,
-    "",
-    "# apsolut-cortex memory vault",
-    "",
-    `${[...memoriesByProject.values()].reduce((s, ms) => s + ms.length, 0)} memories across ${memoriesByProject.size} project(s).`,
-    ""
-  ];
-  const projectNames = [...memoriesByProject.keys()].sort();
-  for (const projectName of projectNames) {
-    const memories = memoriesByProject.get(projectName);
-    lines.push(`## ${projectName} (${memories.length})`, "");
-    const byCategory = new Map;
-    for (const m of memories) {
-      if (!byCategory.has(m.category))
-        byCategory.set(m.category, []);
-      byCategory.get(m.category).push(m);
-    }
-    for (const category of [...byCategory.keys()].sort()) {
-      const ms = byCategory.get(category);
-      lines.push(`### ${category} (${ms.length})`, "");
-      const sorted = ms.sort((a, b) => b.weight - a.weight);
-      for (const m of sorted) {
-        const fname = memoryFilename(m, projectName);
-        const snippet = m.content.length > 80 ? m.content.slice(0, 77) + "..." : m.content;
-        lines.push(`- [[memories/${fname.replace(/\.md$/, "")}|${m.id.slice(0, 8)}]] *(${m.trust}, w=${m.weight.toFixed(2)})* — ${snippet}`);
-      }
-      lines.push("");
-    }
-  }
-  return lines.join(`
-`) + `
-`;
-}
-async function exportVault(db, opts = {}) {
-  const vaultDir = opts.vaultDir ?? OBSIDIAN_DIR;
-  const memoriesDir = join3(vaultDir, "memories");
-  const indexPath = join3(vaultDir, "index.md");
-  const projectIdFilter = opts.projectIdFilter;
-  if (!existsSync3(vaultDir))
-    mkdirSync2(vaultDir, { recursive: true });
-  if (!existsSync3(memoriesDir))
-    mkdirSync2(memoriesDir, { recursive: true });
-  const projects = await db.execute("SELECT id, name FROM projects");
-  const projectName = new Map;
-  for (const r of projects.rows) {
-    projectName.set(r.id, r.name ?? "unknown");
-  }
-  const sql = projectIdFilter ? "SELECT * FROM memories WHERE project_id = ?" : "SELECT * FROM memories";
-  const args = projectIdFilter ? [projectIdFilter] : [];
-  const result = await db.execute({ sql, args });
-  const memories = result.rows.map((r) => ({
-    id: r.id,
-    project_id: r.project_id,
-    tier: r.tier,
-    category: r.category,
-    trust: r.trust,
-    content: r.content,
-    context: r.context,
-    source: r.source,
-    embedding: r.embedding,
-    weight: r.weight,
-    used_count: r.used_count,
-    last_used: r.last_used,
-    created_at: r.created_at,
-    session_id: r.session_id,
-    flagged: r.flagged,
-    flag_reason: r.flag_reason,
-    source_session_id: r.source_session_id ?? null,
-    source_start_msg_idx: r.source_start_msg_idx ?? null,
-    source_end_msg_idx: r.source_end_msg_idx ?? null
-  }));
-  const wantedFiles = new Set;
-  const byProject = new Map;
-  for (const m of memories) {
-    const pName = projectName.get(m.project_id) ?? "unknown";
-    if (!byProject.has(pName))
-      byProject.set(pName, []);
-    byProject.get(pName).push(m);
-    const fname = memoryFilename(m, pName);
-    wantedFiles.add(fname);
-    writeFileSync2(join3(memoriesDir, fname), memoryFile(m, pName));
-  }
-  let removed = 0;
-  if (!projectIdFilter) {
-    const present = readdirSync(memoriesDir).filter((f) => f.endsWith(".md"));
-    for (const f of present) {
-      if (!wantedFiles.has(f)) {
-        try {
-          unlinkSync(join3(memoriesDir, f));
-          removed++;
-        } catch {}
-      }
-    }
-  }
-  writeFileSync2(indexPath, indexFile(byProject));
-  return {
-    memories_written: memories.length,
-    files_removed: removed,
-    vault_dir: vaultDir
-  };
-}
-
-// src/buffer.ts
-import {
-  appendFileSync,
-  existsSync as existsSync4,
-  mkdirSync as mkdirSync3,
-  readFileSync as readFileSync2,
-  readdirSync as readdirSync2,
-  statSync,
-  unlinkSync as unlinkSync2,
-  writeFileSync as writeFileSync3
-} from "fs";
-import { join as join4 } from "path";
 import { homedir as homedir3 } from "os";
-var BUFFER_DIR = join4(homedir3(), ".apsolut-cortex", "buffer");
+var BUFFER_DIR = join3(homedir3(), ".apsolut-cortex", "buffer");
 var LOCK_TTL_MS = 5 * 60 * 1000;
 function ensureDir() {
-  if (!existsSync4(BUFFER_DIR))
-    mkdirSync3(BUFFER_DIR, { recursive: true });
+  if (!existsSync3(BUFFER_DIR))
+    mkdirSync2(BUFFER_DIR, { recursive: true });
 }
 function lockPath(sessionId) {
-  return join4(BUFFER_DIR, `${sessionId}.lock`);
+  return join3(BUFFER_DIR, `${sessionId}.lock`);
 }
 function cursorPath(sessionId) {
-  return join4(BUFFER_DIR, `${sessionId}.cursor`);
+  return join3(BUFFER_DIR, `${sessionId}.cursor`);
 }
 function readCursor(sessionId) {
   const path = cursorPath(sessionId);
-  if (!existsSync4(path))
+  if (!existsSync3(path))
     return 0;
   try {
     const n = parseInt(readFileSync2(path, "utf-8").trim(), 10);
@@ -1019,37 +723,29 @@ function readCursor(sessionId) {
 }
 function writeCursor(sessionId, msgIdx) {
   ensureDir();
-  writeFileSync3(cursorPath(sessionId), String(msgIdx));
-}
-function clearCursor(sessionId) {
-  const path = cursorPath(sessionId);
-  if (existsSync4(path)) {
-    try {
-      unlinkSync2(path);
-    } catch {}
-  }
+  writeFileSync2(cursorPath(sessionId), String(msgIdx));
 }
 function tryAcquireLock(sessionId) {
   ensureDir();
   const path = lockPath(sessionId);
-  if (existsSync4(path)) {
+  if (existsSync3(path)) {
     try {
       const age = Date.now() - statSync(path).mtimeMs;
       if (age > LOCK_TTL_MS) {
         try {
-          unlinkSync2(path);
+          unlinkSync(path);
         } catch {}
       } else {
         return false;
       }
     } catch {
       try {
-        unlinkSync2(path);
+        unlinkSync(path);
       } catch {}
     }
   }
   try {
-    writeFileSync3(path, String(process.pid));
+    writeFileSync2(path, String(process.pid));
     return true;
   } catch {
     return false;
@@ -1057,19 +753,15 @@ function tryAcquireLock(sessionId) {
 }
 function releaseLock2(sessionId) {
   const path = lockPath(sessionId);
-  if (existsSync4(path)) {
+  if (existsSync3(path)) {
     try {
-      unlinkSync2(path);
+      unlinkSync(path);
     } catch {}
   }
 }
-function clearAllForSession(sessionId) {
-  releaseLock2(sessionId);
-  clearCursor(sessionId);
-}
 
 // src/transcript.ts
-import { existsSync as existsSync5, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
 
 // node_modules/gpt-tokenizer/esm/bpeRanks/o200k_base.js
 var c0 = ["!", '"', "#", "$", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~", [161], [162], [163], [164], [165], [166], [167], [168], [169], [170], [171], [172], [174], [175], [176], [177], [178], [179], [180], [181], [182], [183], [184], [185], [186], [187], [188], [189], [190], [191], [192], [193], [194], [195], [196], [197], [198], [199], [200], [201], [202], [203], [204], [205], [206], [207], [208], [209], [210], [211], [212], [213], [214], [215], [216], [217], [218], [219], [220], [221], [222], [223], [224], [225], [226], [227], [228], [229], [230], [231], [232], [233], [234], [235], [236], [237], [238], [239], [240], [241], [242], [243], [244], [245], [246], [247], [248], [249], [250], [251], [252], [253], [254], [255], "\x00", "\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\b", "\t", `
@@ -5529,13 +5221,7 @@ class GptEncoding {
 
 // node_modules/gpt-tokenizer/esm/encoding/o200k_base.js
 var api = GptEncoding.getEncodingApi("o200k_base", () => o200k_base_default);
-var { decode, decodeAsyncGenerator, decodeGenerator, encode, encodeGenerator, isWithinTokenLimit, countTokens, encodeChat, encodeChatGenerator, vocabularySize, setMergeCacheSize, clearMergeCache, estimateCost } = api;
 // src/tokens.ts
-function countTokens2(text) {
-  if (!text)
-    return 0;
-  return encode(text).length;
-}
 function flattenMessageContent(msg) {
   if (!msg || typeof msg !== "object")
     return "";
@@ -5572,7 +5258,7 @@ function flattenMessageContent(msg) {
 
 // src/transcript.ts
 function readTranscript(transcriptPath) {
-  if (!existsSync5(transcriptPath))
+  if (!existsSync4(transcriptPath))
     return [];
   let raw;
   try {
@@ -5694,105 +5380,14 @@ async function compressSlice(args) {
   };
 }
 
-// src/reflector.ts
-async function maybeReflect(db, sessionId, projectId, projectName) {
-  const memRows = await db.execute({
-    sql: `SELECT * FROM memories
-          WHERE session_id = ? AND project_id = ?
-            AND source != 'reflector'
-          ORDER BY created_at ASC`,
-    args: [sessionId, projectId]
-  });
-  const total = memRows.rows.length;
-  if (total < 3) {
-    return { source_memories: total, source_tokens: 0, reflections_stored: 0, triggered: false };
-  }
-  const memories = memRows.rows.map((r) => ({
-    id: r.id,
-    project_id: r.project_id,
-    tier: r.tier,
-    category: r.category,
-    trust: r.trust,
-    content: r.content,
-    context: r.context,
-    source: r.source,
-    embedding: r.embedding,
-    weight: r.weight,
-    used_count: r.used_count,
-    last_used: r.last_used,
-    created_at: r.created_at,
-    session_id: r.session_id,
-    flagged: r.flagged,
-    flag_reason: r.flag_reason,
-    source_session_id: r.source_session_id ?? null,
-    source_start_msg_idx: r.source_start_msg_idx ?? null,
-    source_end_msg_idx: r.source_end_msg_idx ?? null
-  }));
-  const text = memories.map((m) => `[${m.category}] ${m.content}${m.context ? ` — ${m.context}` : ""}`).join(`
-
-`);
-  const tokens = countTokens2(text);
-  if (tokens < CORTEX_REFLECT_THRESHOLD) {
-    return { source_memories: total, source_tokens: tokens, reflections_stored: 0, triggered: false };
-  }
-  const observations = memories.map((m) => ({
-    tool_name: m.category,
-    content: m.content,
-    category: m.category
-  }));
-  const { memories: reflections } = await compressSession(observations, projectName);
-  let stored = 0;
-  for (const r of reflections) {
-    const textToEmbed = r.context ? `${r.content} ${r.context}` : r.content;
-    let embedding = null;
-    try {
-      embedding = await embed(textToEmbed);
-    } catch (e) {
-      process.stderr.write(`[apsolut-cortex] reflector embed failed: ${e}
-`);
-    }
-    if (embedding) {
-      const dup = await findDuplicate(db, projectId, embedding);
-      if (dup) {
-        await bumpWeight(db, dup.id);
-        continue;
-      }
-    }
-    await insertMemory(db, {
-      project_id: projectId,
-      tier: "meta",
-      category: r.category,
-      trust: "observed",
-      content: r.content,
-      context: r.context ?? `Reflection over ${total} memories from session ${sessionId.slice(0, 8)}`,
-      source: "reflector",
-      embedding,
-      weight: 1.2,
-      session_id: sessionId,
-      source_session_id: sessionId,
-      source_start_msg_idx: null,
-      source_end_msg_idx: null
-    });
-    stored++;
-  }
-  return { source_memories: total, source_tokens: tokens, reflections_stored: stored, triggered: true };
-}
-
-// src/hooks/session-end.ts
-function hashFile(path) {
-  try {
-    if (!existsSync6(path))
-      return null;
-    return createHash("sha256").update(readFileSync4(path)).digest("hex");
-  } catch {
-    return null;
-  }
-}
+// src/hooks/pre-compact.ts
 async function main() {
   const raw = await new Promise((resolve) => {
     let d = "";
     process.stdin.setEncoding("utf-8");
-    process.stdin.on("data", (c) => d += c);
+    process.stdin.on("data", (c) => {
+      d += c;
+    });
     process.stdin.on("end", () => resolve(d));
   });
   let data = {};
@@ -5802,10 +5397,12 @@ async function main() {
     process.exit(0);
   }
   const cwd = data.cwd ?? process.cwd();
-  const sessionId = data.session_id ?? "unknown";
+  const sessionId = data.session_id;
   const transcriptPath = data.transcript_path;
-  const projectFile = join5(cwd, ".apsolut-cortex", "project.json");
-  if (!existsSync6(projectFile))
+  if (!sessionId || !transcriptPath)
+    process.exit(0);
+  const projectFile = join4(cwd, ".apsolut-cortex", "project.json");
+  if (!existsSync5(projectFile))
     process.exit(0);
   let project = null;
   try {
@@ -5815,106 +5412,27 @@ async function main() {
   }
   if (!project?.id)
     process.exit(0);
+  const deadline = Date.now() + 3000;
+  while (!tryAcquireLock(sessionId) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 200));
+  }
   try {
     const db = await getDb();
-    const currentObs = await getSessionObservations(db, sessionId);
-    const staleObs = await getUnprocessedObservations(db, project.id, sessionId);
-    const observations = [...currentObs, ...staleObs];
-    const currentHashes = TRACKED_FILES.map((f) => ({ path: f, hash: hashFile(join5(cwd, f)) })).filter((h) => h.hash !== null);
-    const changedFiles = await diffFileHashes(db, project.id, currentHashes);
-    if (currentHashes.length > 0)
-      await snapshotFileHashes(db, project.id, currentHashes);
-    const projectContext = changedFiles.length > 0 ? `${project.name} (files changed: ${changedFiles.join(", ")})` : project.name;
-    const { memories, summary } = await compressSession(observations, projectContext);
-    const tx = await db.transaction("write");
-    try {
-      let stored = 0;
-      for (const mem of memories) {
-        const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
-        let embeddingRaw = null;
-        try {
-          embeddingRaw = await embed(textToEmbed);
-        } catch (e) {
-          console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
-        }
-        if (embeddingRaw) {
-          const dup = await findDuplicate(tx, project.id, embeddingRaw);
-          if (dup) {
-            await bumpWeight(tx, dup.id);
-            continue;
-          }
-        }
-        const weight = mem.category === "correction" ? CORTEX_CORRECTION_WEIGHT : 1;
-        await insertMemory(tx, {
-          project_id: project.id,
-          tier: mem.tier,
-          category: mem.category,
-          trust: "observed",
-          content: mem.content,
-          context: mem.context ?? null,
-          source: "hook_auto",
-          embedding: embeddingRaw,
-          weight,
-          session_id: sessionId
-        });
-        stored++;
-      }
-      if (observations.length > 0) {
-        await markProjectObservationsPromoted(tx, project.id);
-      }
-      await upsertSession(tx, {
-        id: sessionId,
-        project_id: project.id,
-        ended_at: Date.now(),
-        summary: summary || undefined,
-        memories_stored: stored
-      });
-      await tx.commit();
-    } finally {
-      tx.close();
-    }
-    const { pruned } = await decayAndPrune(db, project.id);
-    if (pruned > 0) {
-      console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);
-    }
-    if (transcriptPath) {
-      const got = tryAcquireLock(sessionId);
-      try {
-        const result = await compressSlice({
-          db,
-          sessionId,
-          projectId: project.id,
-          projectName: project.name,
-          transcriptPath,
-          source: "session-end"
-        });
-        if (result.memories_stored > 0 || result.raw_persisted > 0) {
-          console.error(`[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`);
-        }
-      } catch (e) {
-        console.error(`[apsolut-cortex] SessionEnd tail compression failed: ${e}`);
-      } finally {
-        if (got)
-          releaseLock2(sessionId);
-      }
-    }
-    try {
-      const ref = await maybeReflect(db, sessionId, project.id, project.name);
-      if (ref.triggered) {
-        console.error(`[apsolut-cortex] reflector: ${ref.reflections_stored} reflections from ${ref.source_memories} memories (${ref.source_tokens} tok)`);
-      }
-    } catch (e) {
-      console.error(`[apsolut-cortex] reflector skipped: ${e}`);
-    }
-    try {
-      await exportVault(db);
-    } catch (e) {
-      console.error(`[apsolut-cortex] export skipped: ${e}`);
-    }
-    clearAllForSession(sessionId);
+    const result = await compressSlice({
+      db,
+      sessionId,
+      projectId: project.id,
+      projectName: project.name,
+      transcriptPath,
+      source: "precompact"
+    });
+    process.stderr.write(`[apsolut-cortex] PreCompact captured: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories (+${result.duplicates_bumped} bumped)
+`);
   } catch (e) {
-    console.error(`[apsolut-cortex] session-end error: ${e}`);
-    process.exit(0);
+    process.stderr.write(`[apsolut-cortex] PreCompact error: ${e}
+`);
+  } finally {
+    releaseLock2(sessionId);
   }
 }
-main();
+main().catch(() => process.exit(0));

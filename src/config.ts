@@ -78,6 +78,31 @@ export const CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
  */
 export const CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
 
+// ── In-session compression (M6) ─────────────────────────────────────────────
+
+/**
+ * Conversation-token budget that triggers a background compression run
+ * via PostToolUse. Below this, observations stay in the buffer; at this
+ * point, a detached worker is spawned (single-flight per session).
+ */
+export const CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
+
+/**
+ * If conversation tokens cross `CORTEX_OBSERVE_THRESHOLD * this` before
+ * the async worker completes, fall back to synchronous compression in
+ * the PostToolUse hook itself. Safety net against losing observations
+ * to Claude Code's own compaction.
+ */
+export const CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
+
+/**
+ * When the compressed memory log for a session exceeds this many tokens,
+ * trigger the reflector layer to re-summarize into denser reflections.
+ * Two-tier compression. Conservative for v1 — reflector runs on
+ * SessionEnd only.
+ */
+export const CORTEX_REFLECT_THRESHOLD = envNum("APSOLUT_CORTEX_REFLECT_THRESHOLD", 40000);
+
 // ── Tracked Config Files ────────────────────────────────────────────────────
 
 export const TRACKED_FILES = [

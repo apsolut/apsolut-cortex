@@ -17,3 +17,4 @@ When **not** to write one:
 ## Index
 
 - [001 — libSQL over better-sqlite3](001-libsql-over-better-sqlite3.md)
+- [002 — Async in-session compression via detached workers](002-async-compression.md)

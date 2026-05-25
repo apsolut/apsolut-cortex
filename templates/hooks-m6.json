@@ -1,0 +1,33 @@
+{
+  "_comment": "apsolut-cortex M6 hook set — extends the legacy SessionEnd-only setup with token-budget in-session compression and a PreCompact safety hook. Merge into ~/.claude/settings.json via `apsolut-cortex install-hooks`.",
+  "SessionStart": [
+    {
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "apsolut-cortex hook:session-start" }]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "apsolut-cortex hook:post-tool-use" }]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "apsolut-cortex hook:stop" }]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "apsolut-cortex hook:session-end" }]
+    }
+  ],
+  "PreCompact": [
+    {
+      "matcher": "",
+      "hooks": [{ "type": "command", "command": "apsolut-cortex hook:pre-compact", "timeout": 60 }]
+    }
+  ]
+}

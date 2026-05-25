@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] – 2026-05-25
+
+### Added
+- **M6 in-session compression (opt-in, Phase 2):** memories now land *during* the session, not just at SessionEnd. Triggered by conversation token budget (default 30000) with a hard safety net at 1.2× that threshold. Activates the M4 `raw_messages` table — `memory_recall(id)` now returns actual transcript history for any memory produced after upgrade.
+  - **`src/tokens.ts`** — `gpt-tokenizer`-backed local estimator. Never calls a model just to count tokens. Handles structured-block content (`text`, `tool_use`, `tool_result`) flattening for Claude Code transcript format.
+  - **`src/buffer.ts`** — per-session JSONL spill + single-flight lockfile + cursor (last-compressed `msg_idx`). Survives process kills; cursor makes re-runs idempotent.
+  - **`src/transcript.ts`** — `readTranscript()` / `sliceRange()` / `persistRawMessages()` / `captureTranscript()`. Parses the JSON-l transcript Claude Code hands every hook via `transcript_path`.
+  - **`src/compress-runner.ts`** — shared `compressSlice()` used by PreCompact, the detached worker, and SessionEnd. Persists raw messages, slices by cursor, compresses via existing `compress.ts` pipeline (Haiku → Ollama fallback + circuit breaker), inserts memories with `source_session_id` / `source_start_msg_idx` / `source_end_msg_idx` set so `memory_recall` can resolve them later.
+  - **`src/hooks/pre-compact.ts`** — synchronous emergency capture before Claude Code compacts. Waits up to 3 s for any running worker, then force-acquires the lock.
+  - **`src/hooks/compress-worker.ts`** — detached background worker spawned by PostToolUse when the token budget is hit. Honors the single-flight lock and exits quietly if another worker is already running.
+  - **`src/hooks/post-tool-use.ts`** — updated with the token-budget trigger; spawns the worker async at threshold, falls back to synchronous compression at 1.2× threshold.
+  - **`src/hooks/session-end.ts`** — calls `compressSlice` for the final tail of the session so every memory has a source range, then `clearAllForSession` cleans up buffer artifacts.
+  - **`src/reflector.ts` + SessionEnd integration** — when this session's memories exceed `APSOLUT_CORTEX_REFLECT_THRESHOLD` tokens (default 40000), re-summarize them into denser `tier=meta`, `source=reflector` memories. Conservative v1: SessionEnd only.
+  - **`templates/hooks-m6.json`** + **`apsolut-cortex install-hooks`** CLI — opt-in hook installer that wires `SessionStart + PostToolUse + Stop + SessionEnd + PreCompact` into `~/.claude/settings.json`. Existing users on legacy `init`-installed hooks are not affected until they explicitly opt in.
+- **3 new env vars in `src/config.ts`:** `APSOLUT_CORTEX_OBSERVE_THRESHOLD` (30000), `APSOLUT_CORTEX_OBSERVE_BLOCK_MULT` (1.2), `APSOLUT_CORTEX_REFLECT_THRESHOLD` (40000).
+- **3 new test files (tokens, buffer, transcript)** — 25 new tests; 59/59 total tests passing across 10 files.
+- **`docs/decisions/002-async-compression.md`** explains why we use detached child processes instead of the speculated `"async": true` hook flag (which doesn't exist in Claude Code 2.x).
+- `CHANGELOG.md` and `templates/` added to the published `files` array in `package.json`.
+
+### Dependencies
+- Added `gpt-tokenizer@^3.4.0` for local conversation-token counting.
+
 ## [0.10.0] – 2026-05-24
 
 ### Added
@@ -138,7 +160,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/apsolut/apsolut-cortex/compare/v0.7.0...v0.8.0

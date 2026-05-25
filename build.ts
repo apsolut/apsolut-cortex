@@ -22,12 +22,14 @@ const external = [
 const externalFlags = external.flatMap(p => ["--external", p]);
 
 const entries = [
-  { in: "src/cli.ts",                 out: "dist/cli.js" },
-  { in: "src/mcp/server.ts",          out: "dist/mcp/server.js" },
-  { in: "src/hooks/session-start.ts", out: "scripts/session-start.js" },
-  { in: "src/hooks/post-tool-use.ts", out: "scripts/post-tool-use.js" },
-  { in: "src/hooks/stop.ts",          out: "scripts/stop.js" },
-  { in: "src/hooks/session-end.ts",   out: "scripts/session-end.js" },
+  { in: "src/cli.ts",                    out: "dist/cli.js" },
+  { in: "src/mcp/server.ts",             out: "dist/mcp/server.js" },
+  { in: "src/hooks/session-start.ts",    out: "scripts/session-start.js" },
+  { in: "src/hooks/post-tool-use.ts",    out: "scripts/post-tool-use.js" },
+  { in: "src/hooks/stop.ts",             out: "scripts/stop.js" },
+  { in: "src/hooks/session-end.ts",      out: "scripts/session-end.js" },
+  { in: "src/hooks/pre-compact.ts",      out: "scripts/pre-compact.js" },
+  { in: "src/hooks/compress-worker.ts",  out: "scripts/compress-worker.js" },
 ];
 
 let failed = false;

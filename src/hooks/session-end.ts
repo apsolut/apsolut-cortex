@@ -27,6 +27,13 @@ import { compressSession } from "../compress.js";
 import { embed } from "../embed.js";
 import { TRACKED_FILES, CORTEX_CORRECTION_WEIGHT } from "../config.js";
 import { exportVault } from "../export.js";
+import { compressSlice } from "../compress-runner.js";
+import {
+  tryAcquireLock,
+  releaseLock,
+  clearAllForSession,
+} from "../buffer.js";
+import { maybeReflect } from "../reflector.js";
 
 function hashFile(path: string): string | null {
   try {
@@ -46,6 +53,8 @@ async function main() {
 
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? "unknown";
+  // Optional in dev / legacy installs; required for M6 transcript capture.
+  const transcriptPath = (data as { transcript_path?: string }).transcript_path;
 
   const projectFile = join(cwd, ".apsolut-cortex", "project.json");
   if (!existsSync(projectFile)) process.exit(0);
@@ -145,6 +154,46 @@ async function main() {
       console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);
     }
 
+    // ── M6: final transcript capture + compress tail ────────────────────
+    // If transcript_path is present (M6 hook install), persist any
+    // remaining raw_messages and compress the slice the cursor hasn't
+    // covered yet. This guarantees that on the next session, memory_recall
+    // can resolve every memory created this session back to raw context.
+    if (transcriptPath) {
+      const got = tryAcquireLock(sessionId);
+      try {
+        const result = await compressSlice({
+          db,
+          sessionId,
+          projectId: project.id,
+          projectName: project.name,
+          transcriptPath,
+          source: "session-end",
+        });
+        if (result.memories_stored > 0 || result.raw_persisted > 0) {
+          console.error(
+            `[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`
+          );
+        }
+      } catch (e) {
+        console.error(`[apsolut-cortex] SessionEnd tail compression failed: ${e}`);
+      } finally {
+        if (got) releaseLock(sessionId);
+      }
+    }
+
+    // ── M6 reflector: consolidate large sessions into denser memories ──
+    try {
+      const ref = await maybeReflect(db, sessionId, project.id, project.name);
+      if (ref.triggered) {
+        console.error(
+          `[apsolut-cortex] reflector: ${ref.reflections_stored} reflections from ${ref.source_memories} memories (${ref.source_tokens} tok)`
+        );
+      }
+    } catch (e) {
+      console.error(`[apsolut-cortex] reflector skipped: ${e}`);
+    }
+
     // Auto-export to the Obsidian vault. Wrapped in its own try so a
     // markdown write failure cannot break compression (which is the
     // primary responsibility of this hook).
@@ -153,6 +202,9 @@ async function main() {
     } catch (e) {
       console.error(`[apsolut-cortex] export skipped: ${e}`);
     }
+
+    // Clean up per-session buffer artifacts (cursor + any stray lock).
+    clearAllForSession(sessionId);
   } catch (e) {
     console.error(`[apsolut-cortex] session-end error: ${e}`);
     process.exit(0);

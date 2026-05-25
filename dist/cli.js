@@ -47,6 +47,9 @@ var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+var CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
+var CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
+var CORTEX_REFLECT_THRESHOLD = envNum("APSOLUT_CORTEX_REFLECT_THRESHOLD", 40000);
 
 // src/migrations/001-initial-schema.ts
 var migration = {
@@ -919,6 +922,15 @@ switch (cmd) {
   case "hook:session-end":
     await runHook("session-end");
     break;
+  case "hook:pre-compact":
+    await runHook("pre-compact");
+    break;
+  case "hook:compress-worker":
+    await runHook("compress-worker");
+    break;
+  case "install-hooks":
+    await installHooksCmd(process.argv.slice(3));
+    break;
   case "help":
   case "--help":
   case "-h":
@@ -935,6 +947,7 @@ switch (cmd) {
   │    migrate     Apply pending schema migrations   │
   │    correct     Flag last retrieval as a miss     │
   │    export      Export memories to Obsidian vault │
+  │    install-hooks  Wire M6 hooks (PreCompact+)    │
   │    backup      Snapshot the DB                   │
   │    restore     Restore a snapshot                │
   │    db re-encrypt  Migrate DB to encrypted        │
@@ -1229,6 +1242,50 @@ async function correctCmd(args) {
   if (!correctionText) {
     console.log(`[apsolut-cortex]   (pass --with "<correct answer>" to also store the fix as a new memory)`);
   }
+}
+async function installHooksCmd(args) {
+  const template = IS_DIST ? join5(PACKAGE_ROOT, "templates", "hooks-m6.json") : join5(PACKAGE_ROOT, "templates", "hooks-m6.json");
+  if (!existsSync6(template)) {
+    console.log(`[apsolut-cortex] template missing: ${template}`);
+    process.exitCode = 1;
+    return;
+  }
+  const tmpl = JSON.parse(readFileSync3(template, "utf-8"));
+  const m6Events = ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"];
+  if (!IS_DIST && !args.includes("--force")) {
+    console.log(`[apsolut-cortex] install-hooks is intended for npm-installed users.`);
+    console.log(`[apsolut-cortex] In dev mode, run with --force if you really want to wire`);
+    console.log(`[apsolut-cortex] the M6 hook set assuming apsolut-cortex is on PATH.`);
+    return;
+  }
+  let settings = {};
+  const settingsDir = dirname3(CLAUDE_SETTINGS);
+  if (!existsSync6(settingsDir))
+    mkdirSync6(settingsDir, { recursive: true });
+  if (existsSync6(CLAUDE_SETTINGS)) {
+    try {
+      settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
+    } catch {}
+  }
+  const existingHooks = settings.hooks ?? {};
+  for (const event of m6Events) {
+    const tmplEntries = tmpl[event] ?? [];
+    const current = existingHooks[event] ?? [];
+    const otherTools = current.filter((e) => {
+      if (typeof e !== "object")
+        return true;
+      if (Array.isArray(e.hooks)) {
+        return !e.hooks.some((h) => h.command?.includes("apsolut-cortex"));
+      }
+      return !e.command?.includes("apsolut-cortex");
+    });
+    existingHooks[event] = [...otherTools, ...tmplEntries];
+  }
+  settings.hooks = existingHooks;
+  writeFileSync3(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
+  console.log(`[apsolut-cortex] ✓ Installed M6 hooks into ${CLAUDE_SETTINGS}`);
+  console.log(`[apsolut-cortex]   Events wired: ${m6Events.join(", ")}`);
+  console.log(`[apsolut-cortex]   Restart any open Claude Code session for the new hooks to apply.`);
 }
 async function exportCmd() {
   const db = await getDb();
