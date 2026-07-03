@@ -1,15 +1,17 @@
 /**
  * Claude Code hook: Stop
  *
- * Scans transcript for self-correction patterns and stores them as observations.
+ * Scans the transcript for self-correction patterns and stores them as
+ * observations.
  *
- * Input: { session_id, cwd, transcript? }
+ * Input: { session_id, cwd, transcript_path }
  */
 
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getDb, upsertSession, insertObservation } from "../db.js";
 import { stripPrivate } from "../privacy.js";
+import { readTranscript } from "../transcript.js";
 
 const CORRECTION_PATTERNS = [
   /actually,?\s+(?:the|it'?s?|that'?s?)\s+(.{20,150})/gi,
@@ -40,13 +42,26 @@ async function main() {
     process.stdin.on("data", (c: string) => d += c);
     process.stdin.on("end", () => resolve(d));
   });
-  let data: { session_id?: string; cwd?: string; transcript?: string } = {};
+  let data: {
+    session_id?: string;
+    cwd?: string;
+    transcript?: string;
+    transcript_path?: string;
+  } = {};
   try { data = JSON.parse(raw); } catch { process.exit(0); }
 
-  if (!data.transcript) process.exit(0);
-  const cleaned = stripPrivate(data.transcript);
+  // Claude Code passes transcript_path (a JSONL file), not inline text.
+  // Self-corrections are Claude's own, so scan assistant messages only.
+  let transcriptText = data.transcript ?? "";
+  if (!transcriptText && data.transcript_path) {
+    transcriptText = readTranscript(data.transcript_path)
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.content)
+      .join("\n");
+  }
+  if (!transcriptText) process.exit(0);
+  const cleaned = stripPrivate(transcriptText);
   if (!cleaned) process.exit(0);
-  data.transcript = cleaned;
 
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? "unknown";
@@ -64,8 +79,15 @@ async function main() {
     const db = await getDb();
     await upsertSession(db, { id: sessionId, project_id: project.id });
 
-    const corrections = extractCorrections(data.transcript);
+    const corrections = extractCorrections(cleaned);
     for (const correction of corrections) {
+      // Stop fires every turn and the transcript accumulates, so the same
+      // correction resurfaces on each scan — skip ones already stored.
+      const existing = await db.execute({
+        sql: "SELECT 1 FROM observations WHERE session_id = ? AND content = ? LIMIT 1",
+        args: [sessionId, correction],
+      });
+      if (existing.rows.length > 0) continue;
       await insertObservation(db, {
         session_id: sessionId,
         project_id: project.id,

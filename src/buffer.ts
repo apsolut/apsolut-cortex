@@ -138,12 +138,11 @@ export function tryAcquireLock(sessionId: string): boolean {
     }
   }
 
-  // Atomic-ish create. Two racing processes could both pass the existsSync
-  // check above; using writeFileSync with the 'wx' flag would be stricter,
-  // but Node's fs lacks a clean cross-platform exclusive-create primitive.
-  // For single-user/single-machine cortex this is good enough.
+  // Exclusive create — 'wx' throws EEXIST if another process won the race
+  // between the staleness check above and this write. Works on all
+  // platforms (Windows included).
   try {
-    writeFileSync(path, String(process.pid));
+    writeFileSync(path, String(process.pid), { flag: "wx" });
     return true;
   } catch {
     return false;

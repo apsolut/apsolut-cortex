@@ -147,9 +147,21 @@ async function compressWithOllama(
 
 function parseResult(raw: string): CompressionResult {
   const clean = raw.replace(/```json|```/g, "").trim();
-  const parsed = JSON.parse(clean);
+  let parsed: { memories?: unknown; summary?: unknown };
+  try {
+    parsed = JSON.parse(clean);
+  } catch {
+    // Models occasionally wrap the JSON in prose despite the prompt —
+    // retry on the outermost {...} span before giving up.
+    const start = clean.indexOf("{");
+    const end = clean.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      throw new Error(`compression output was not JSON: ${clean.slice(0, 120)}`);
+    }
+    parsed = JSON.parse(clean.slice(start, end + 1));
+  }
   return {
-    memories: Array.isArray(parsed.memories) ? parsed.memories : [],
+    memories: Array.isArray(parsed.memories) ? (parsed.memories as ExtractedMemory[]) : [],
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
   };
 }

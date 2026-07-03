@@ -366,6 +366,10 @@ async function getDb() {
 `);
     }
     _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch {}
   }
   if (!_initialized) {
     await runMigrations(_db);

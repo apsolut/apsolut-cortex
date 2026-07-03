@@ -1,5 +1,5 @@
 // src/hooks/stop.ts
-import { readFileSync, existsSync as existsSync2 } from "fs";
+import { readFileSync as readFileSync2, existsSync as existsSync3 } from "fs";
 import { join as join2 } from "path";
 
 // src/db.ts
@@ -321,6 +321,10 @@ async function getDb() {
 `);
     }
     _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch {}
   }
   if (!_initialized) {
     await runMigrations(_db);
@@ -433,6 +437,82 @@ function stripPrivate(text) {
   return stripped.length > 0 ? stripped : null;
 }
 
+// src/transcript.ts
+import { existsSync as existsSync2, readFileSync } from "fs";
+
+// src/tokens.ts
+import { encode } from "gpt-tokenizer";
+function flattenMessageContent(msg) {
+  if (!msg || typeof msg !== "object")
+    return "";
+  const outer = msg;
+  const m = outer.message && typeof outer.message === "object" ? outer.message : msg;
+  if (typeof m.content === "string")
+    return m.content;
+  if (!Array.isArray(m.content))
+    return "";
+  const parts = [];
+  for (const block of m.content) {
+    if (!block || typeof block !== "object")
+      continue;
+    const b = block;
+    if (typeof b.text === "string")
+      parts.push(b.text);
+    if (b.type === "tool_use") {
+      parts.push(`[tool_use ${b.name ?? "?"}: ${JSON.stringify(b.input ?? {}).slice(0, 200)}]`);
+    }
+    if (b.type === "tool_result") {
+      if (typeof b.content === "string")
+        parts.push(b.content);
+      else if (Array.isArray(b.content)) {
+        for (const c of b.content) {
+          if (c && typeof c === "object" && typeof c.text === "string") {
+            parts.push(c.text);
+          }
+        }
+      }
+    }
+  }
+  return parts.join(`
+`);
+}
+
+// src/transcript.ts
+function readTranscript(transcriptPath) {
+  if (!existsSync2(transcriptPath))
+    return [];
+  let raw;
+  try {
+    raw = readFileSync(transcriptPath, "utf-8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  let idx = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim())
+      continue;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      idx++;
+      continue;
+    }
+    const obj = msg && typeof msg === "object" ? msg : {};
+    const inner = obj.message && typeof obj.message === "object" ? obj.message : null;
+    const role = typeof inner?.role === "string" ? inner.role : typeof obj.role === "string" ? obj.role : typeof obj.type === "string" ? obj.type : "unknown";
+    out.push({
+      msg_idx: idx,
+      role,
+      content: flattenMessageContent(msg),
+      raw: msg
+    });
+    idx++;
+  }
+  return out;
+}
+
 // src/hooks/stop.ts
 var CORRECTION_PATTERNS = [
   /actually,?\s+(?:the|it'?s?|that'?s?)\s+(.{20,150})/gi,
@@ -468,20 +548,24 @@ async function main() {
   } catch {
     process.exit(0);
   }
-  if (!data.transcript)
+  let transcriptText = data.transcript ?? "";
+  if (!transcriptText && data.transcript_path) {
+    transcriptText = readTranscript(data.transcript_path).filter((m) => m.role === "assistant").map((m) => m.content).join(`
+`);
+  }
+  if (!transcriptText)
     process.exit(0);
-  const cleaned = stripPrivate(data.transcript);
+  const cleaned = stripPrivate(transcriptText);
   if (!cleaned)
     process.exit(0);
-  data.transcript = cleaned;
   const cwd = data.cwd ?? process.cwd();
   const sessionId = data.session_id ?? "unknown";
   const projectFile = join2(cwd, ".apsolut-cortex", "project.json");
-  if (!existsSync2(projectFile))
+  if (!existsSync3(projectFile))
     process.exit(0);
   let project = null;
   try {
-    project = JSON.parse(readFileSync(projectFile, "utf-8"));
+    project = JSON.parse(readFileSync2(projectFile, "utf-8"));
   } catch {
     process.exit(0);
   }
@@ -490,8 +574,14 @@ async function main() {
   try {
     const db = await getDb();
     await upsertSession(db, { id: sessionId, project_id: project.id });
-    const corrections = extractCorrections(data.transcript);
+    const corrections = extractCorrections(cleaned);
     for (const correction of corrections) {
+      const existing = await db.execute({
+        sql: "SELECT 1 FROM observations WHERE session_id = ? AND content = ? LIMIT 1",
+        args: [sessionId, correction]
+      });
+      if (existing.rows.length > 0)
+        continue;
       await insertObservation(db, {
         session_id: sessionId,
         project_id: project.id,

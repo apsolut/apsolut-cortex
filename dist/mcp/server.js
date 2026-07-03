@@ -331,6 +331,10 @@ async function getDb() {
 `);
     }
     _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch {}
   }
   if (!_initialized) {
     await runMigrations(_db);
@@ -933,7 +937,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "memory_search": {
         const p = requireProject();
         const query = String(args?.query ?? "");
-        const limit = Math.min(Number(args?.limit ?? 5), CORTEX_SEARCH_LIMIT_MAX2);
+        const limitRaw = Number(args?.limit ?? 5);
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.round(limitRaw)), CORTEX_SEARCH_LIMIT_MAX2) : 5;
         const tierFilter = args?.tier;
         const trustFilter = args?.trust;
         const t0 = Date.now();
@@ -1064,10 +1069,14 @@ ${tier}/${category}: ${content}`
       }
       case "memory_rate": {
         const id = String(args?.id ?? "");
-        const score = Math.min(3, Math.max(0, Math.round(Number(args?.score ?? 1))));
+        const scoreRaw = Number(args?.score ?? 1);
         if (!id) {
           return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
         }
+        if (!Number.isFinite(scoreRaw)) {
+          return { content: [{ type: "text", text: `${TAG} Error: score must be a number between 0 and 3` }] };
+        }
+        const score = Math.min(3, Math.max(0, Math.round(scoreRaw)));
         await updateWeight(db, id, score);
         const labels = ["useless", "marginal", "helpful", "directly applied"];
         return {

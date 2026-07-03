@@ -41,10 +41,18 @@ export function readTranscript(transcriptPath: string): TranscriptMessage[] {
     if (!line.trim()) continue;
     let msg: unknown;
     try { msg = JSON.parse(line); } catch { idx++; continue; }
+    // Claude Code lines carry the role inside a `message` envelope and a
+    // line kind in top-level `type` ("user", "assistant", "attachment",
+    // ...). Prefer the inner role, fall back to flat `role`, then `type`.
+    const obj = (msg && typeof msg === "object" ? msg : {}) as Record<string, unknown>;
+    const inner = (obj.message && typeof obj.message === "object"
+      ? obj.message
+      : null) as Record<string, unknown> | null;
     const role =
-      (msg && typeof msg === "object" && typeof (msg as { role?: unknown }).role === "string")
-        ? (msg as { role: string }).role
-        : "unknown";
+      typeof inner?.role === "string" ? (inner.role as string)
+      : typeof obj.role === "string" ? (obj.role as string)
+      : typeof obj.type === "string" ? (obj.type as string)
+      : "unknown";
     out.push({
       msg_idx: idx,
       role,

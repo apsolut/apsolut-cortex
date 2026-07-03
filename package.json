@@ -1,6 +1,6 @@
 {
   "name": "apsolut-cortex",
-  "version": "0.12.6",
+  "version": "0.12.7",
   "description": "Persistent memory for Claude Code projects — stores corrections, decisions, and patterns across sessions",
   "type": "module",
   "bin": {
@@ -41,7 +41,7 @@
   "bugs": "https://github.com/apsolut/apsolut-cortex/issues",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

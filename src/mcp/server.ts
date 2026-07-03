@@ -253,7 +253,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "memory_search": {
         const p = requireProject();
         const query = String(args?.query ?? "");
-        const limit = Math.min(Number(args?.limit ?? 5), CORTEX_SEARCH_LIMIT_MAX);
+        const limitRaw = Number(args?.limit ?? 5);
+        const limit = Number.isFinite(limitRaw)
+          ? Math.min(Math.max(1, Math.round(limitRaw)), CORTEX_SEARCH_LIMIT_MAX)
+          : 5;
         const tierFilter = args?.tier as MemoryTier | undefined;
         const trustFilter = args?.trust as string | undefined;
 
@@ -403,11 +406,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
       case "memory_rate": {
         const id = String(args?.id ?? "");
-        const score = Math.min(3, Math.max(0, Math.round(Number(args?.score ?? 1)))) as 0 | 1 | 2 | 3;
+        const scoreRaw = Number(args?.score ?? 1);
 
         if (!id) {
           return { content: [{ type: "text", text: `${TAG} Error: id is required` }] };
         }
+        // A NaN score would flow through the EMA and corrupt the stored
+        // weight permanently — reject it instead.
+        if (!Number.isFinite(scoreRaw)) {
+          return { content: [{ type: "text", text: `${TAG} Error: score must be a number between 0 and 3` }] };
+        }
+        const score = Math.min(3, Math.max(0, Math.round(scoreRaw))) as 0 | 1 | 2 | 3;
 
         await updateWeight(db, id, score);
 

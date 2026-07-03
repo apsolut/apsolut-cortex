@@ -80,6 +80,13 @@ export function snapshot(label = "manual"): string {
   ensureBackupDir();
   const dest = join(BACKUP_DIR, `${label}-${timestamp()}.db`);
   copyFileSync(DB_PATH, dest);
+  // WAL mode (migration 001) can leave committed rows in the -wal sidecar
+  // when the last writer exited without a clean close. Copy it alongside
+  // so the snapshot doesn't silently miss those transactions.
+  const wal = `${DB_PATH}-wal`;
+  if (existsSync(wal)) {
+    try { copyFileSync(wal, `${dest}-wal`); } catch { /* best-effort */ }
+  }
   return dest;
 }
 
@@ -139,6 +146,12 @@ export function restore(snapshotPath: string): { restored: string; safetyBackup:
     }
   }
   renameSync(tmp, DB_PATH);
+  // If the snapshot carried a -wal sidecar (see snapshot()), restore it
+  // too — those are committed transactions the main file doesn't have.
+  const snapshotWal = `${snapshotPath}-wal`;
+  if (existsSync(snapshotWal)) {
+    try { copyFileSync(snapshotWal, `${DB_PATH}-wal`); } catch {}
+  }
   return { restored: snapshotPath, safetyBackup };
 }
 

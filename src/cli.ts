@@ -19,7 +19,7 @@ import {
   rmSync,
   writeFileSync,
 } from "fs";
-import { join, resolve, dirname } from "path";
+import { join, resolve, dirname, sep } from "path";
 import { homedir } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 import { registerProject } from "./registry.js";
@@ -48,7 +48,7 @@ const __dirname = dirname(__filename);
 // When installed via npm, __dirname is inside dist/
 // When run locally with bun, __dirname is inside src/
 const PACKAGE_ROOT = resolve(__dirname, "..");
-const IS_DIST = __dirname.endsWith("dist") || __dirname.includes(`${process.sep}dist${process.sep}`);
+const IS_DIST = __dirname.endsWith("dist") || __dirname.includes(`${sep}dist${sep}`);
 const PKG_VERSION = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf-8")).version;
 
 const PROJECT_ROOT = process.cwd();
@@ -579,9 +579,7 @@ async function deleteCmd(args: string[]) {
  * M6 commands and leaves non-cortex hooks alone.
  */
 async function installHooksCmd(args: string[]) {
-  const template = IS_DIST
-    ? join(PACKAGE_ROOT, "templates", "hooks-m6.json")
-    : join(PACKAGE_ROOT, "templates", "hooks-m6.json");
+  const template = join(PACKAGE_ROOT, "templates", "hooks-m6.json");
 
   if (!existsSync(template)) {
     console.log(`[apsolut-cortex] template missing: ${template}`);
@@ -815,7 +813,7 @@ function uninstall() {
       const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8"));
       const hooks = settings.hooks as Record<string, unknown[]> | undefined;
       if (hooks) {
-        for (const event of ["SessionStart", "PostToolUse", "Stop", "SessionEnd"]) {
+        for (const event of ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"]) {
           if (hooks[event]) {
             hooks[event] = hooks[event].filter(
               (e: any) => {

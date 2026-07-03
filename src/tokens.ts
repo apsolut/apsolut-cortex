@@ -26,7 +26,7 @@ export function countTokens(text: string): number {
  * treat that as "no signal" and skip the budget trigger rather than
  * fail the hook.
  */
-export function countTranscriptTokens(transcriptPath: string): number {
+export function countTranscriptTokens(transcriptPath: string, fromMsgIdx = 0): number {
   let raw: string;
   try {
     raw = readFileSync(transcriptPath, "utf-8");
@@ -34,12 +34,17 @@ export function countTranscriptTokens(transcriptPath: string): number {
     return 0;
   }
 
+  // Index lines the same way readTranscript() does (blank lines skipped,
+  // malformed lines bump the counter) so `fromMsgIdx` can be fed straight
+  // from the compression cursor.
   let total = 0;
+  let idx = 0;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let msg: unknown;
-    try { msg = JSON.parse(line); } catch { continue; }
-    total += countTokens(flattenMessageContent(msg));
+    try { msg = JSON.parse(line); } catch { idx++; continue; }
+    if (idx >= fromMsgIdx) total += countTokens(flattenMessageContent(msg));
+    idx++;
   }
   return total;
 }
@@ -50,7 +55,13 @@ export function countTranscriptTokens(transcriptPath: string): number {
  */
 export function flattenMessageContent(msg: unknown): string {
   if (!msg || typeof msg !== "object") return "";
-  const m = msg as { role?: string; content?: unknown };
+  // Claude Code transcript lines wrap the API message in an envelope:
+  // { type: "user"|"assistant", message: { role, content }, ... }.
+  // Unwrap it; fall back to the object itself for flat { role, content }.
+  const outer = msg as { message?: unknown };
+  const m = (outer.message && typeof outer.message === "object"
+    ? outer.message
+    : msg) as { role?: string; content?: unknown };
   if (typeof m.content === "string") return m.content;
   if (!Array.isArray(m.content)) return "";
 

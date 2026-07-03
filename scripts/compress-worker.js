@@ -321,6 +321,10 @@ async function getDb() {
 `);
     }
     _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch {}
   }
   if (!_initialized) {
     await runMigrations(_db);
@@ -639,7 +643,17 @@ Respond ONLY with valid JSON:`,
 }
 function parseResult(raw) {
   const clean = raw.replace(/```json|```/g, "").trim();
-  const parsed = JSON.parse(clean);
+  let parsed;
+  try {
+    parsed = JSON.parse(clean);
+  } catch {
+    const start = clean.indexOf("{");
+    const end = clean.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      throw new Error(`compression output was not JSON: ${clean.slice(0, 120)}`);
+    }
+    parsed = JSON.parse(clean.slice(start, end + 1));
+  }
   return {
     memories: Array.isArray(parsed.memories) ? parsed.memories : [],
     summary: typeof parsed.summary === "string" ? parsed.summary : ""
@@ -754,7 +768,7 @@ function tryAcquireLock(sessionId) {
     }
   }
   try {
-    writeFileSync2(path, String(process.pid));
+    writeFileSync2(path, String(process.pid), { flag: "wx" });
     return true;
   } catch {
     return false;
@@ -777,7 +791,8 @@ import { encode } from "gpt-tokenizer";
 function flattenMessageContent(msg) {
   if (!msg || typeof msg !== "object")
     return "";
-  const m = msg;
+  const outer = msg;
+  const m = outer.message && typeof outer.message === "object" ? outer.message : msg;
   if (typeof m.content === "string")
     return m.content;
   if (!Array.isArray(m.content))
@@ -830,7 +845,9 @@ function readTranscript(transcriptPath) {
       idx++;
       continue;
     }
-    const role = msg && typeof msg === "object" && typeof msg.role === "string" ? msg.role : "unknown";
+    const obj = msg && typeof msg === "object" ? msg : {};
+    const inner = obj.message && typeof obj.message === "object" ? obj.message : null;
+    const role = typeof inner?.role === "string" ? inner.role : typeof obj.role === "string" ? obj.role : typeof obj.type === "string" ? obj.type : "unknown";
     out.push({
       msg_idx: idx,
       role,

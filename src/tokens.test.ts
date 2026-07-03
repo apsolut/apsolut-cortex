@@ -63,6 +63,29 @@ describe("flattenMessageContent", () => {
     expect(flattenMessageContent(undefined)).toBe("");
     expect(flattenMessageContent("not an object")).toBe("");
   });
+
+  test("unwraps the Claude Code transcript envelope (type + message)", () => {
+    const line = {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "envelope text" },
+          { type: "tool_use", name: "Read", input: { file_path: "a.ts" } },
+        ],
+      },
+      uuid: "x",
+      sessionId: "s",
+    };
+    const flat = flattenMessageContent(line);
+    expect(flat).toContain("envelope text");
+    expect(flat).toContain("[tool_use Read:");
+  });
+
+  test("returns empty string for non-message transcript lines", () => {
+    expect(flattenMessageContent({ type: "mode", mode: "normal" })).toBe("");
+    expect(flattenMessageContent({ type: "last-prompt", leafUuid: "x" })).toBe("");
+  });
 });
 
 describe("countTranscriptTokens", () => {
@@ -94,5 +117,38 @@ describe("countTranscriptTokens", () => {
     );
     const n = countTranscriptTokens(path);
     expect(n).toBeGreaterThan(0);
+  });
+
+  test("counts envelope-format (real Claude Code) transcripts", () => {
+    const path = join(tmpRoot, "envelope.jsonl");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: "mode", mode: "normal" }),
+        JSON.stringify({ type: "user", message: { role: "user", content: "a real user question" } }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "a real assistant answer" }] },
+        }),
+      ].join("\n")
+    );
+    expect(countTranscriptTokens(path)).toBeGreaterThan(0);
+  });
+
+  test("fromMsgIdx only counts messages at or past the cursor", () => {
+    const path = join(tmpRoot, "cursor.jsonl");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ role: "user", content: "one ".repeat(50) }),
+        JSON.stringify({ role: "assistant", content: "two ".repeat(50) }),
+        JSON.stringify({ role: "user", content: "three" }),
+      ].join("\n")
+    );
+    const all = countTranscriptTokens(path);
+    const tail = countTranscriptTokens(path, 2);
+    expect(tail).toBeGreaterThan(0);
+    expect(tail).toBeLessThan(all);
+    expect(countTranscriptTokens(path, 3)).toBe(0);
   });
 });

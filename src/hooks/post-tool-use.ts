@@ -15,7 +15,7 @@ import { classifyToolUse } from "../compress.js";
 import { stripPrivate } from "../privacy.js";
 import { countTranscriptTokens } from "../tokens.js";
 import { compressSlice } from "../compress-runner.js";
-import { tryAcquireLock, releaseLock } from "../buffer.js";
+import { tryAcquireLock, releaseLock, readCursor } from "../buffer.js";
 import {
   CORTEX_OBSERVE_THRESHOLD,
   CORTEX_OBSERVE_BLOCK_MULT,
@@ -93,7 +93,10 @@ async function main() {
     // is only present when the user has installed the M6 hook set.
     const transcriptPath = data.transcript_path;
     if (transcriptPath) {
-      const tokens = countTranscriptTokens(transcriptPath);
+      // Count only the tokens accumulated since the last compression
+      // (cursor). Counting the whole transcript would keep the trigger
+      // permanently armed once crossed — one compression per tool use.
+      const tokens = countTranscriptTokens(transcriptPath, readCursor(sessionId));
       const blockThreshold = CORTEX_OBSERVE_THRESHOLD * CORTEX_OBSERVE_BLOCK_MULT;
 
       if (tokens >= blockThreshold) {
@@ -122,9 +125,11 @@ async function main() {
         // works in both dev (bun) and dist (node) modes.
         try {
           const child = spawn(
-            process.argv[0],
+            process.execPath,
             [process.argv[1], "hook:compress-worker"],
-            { detached: true, stdio: ["pipe", "ignore", "ignore"] }
+            // windowsHide: a detached child on Windows gets its own console
+            // window otherwise — it would flash on every trigger.
+            { detached: true, stdio: ["pipe", "ignore", "ignore"], windowsHide: true }
           );
           const payload = JSON.stringify({
             session_id: sessionId,

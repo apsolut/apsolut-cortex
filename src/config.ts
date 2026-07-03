@@ -81,14 +81,15 @@ export const CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DA
 // ── In-session compression (M6) ─────────────────────────────────────────────
 
 /**
- * Conversation-token budget that triggers a background compression run
- * via PostToolUse. Below this, observations stay in the buffer; at this
- * point, a detached worker is spawned (single-flight per session).
+ * Token budget of *uncompressed* transcript (since the last compression
+ * cursor) that triggers a background compression run via PostToolUse.
+ * Below this, observations stay in the buffer; at this point, a detached
+ * worker is spawned (single-flight per session).
  */
 export const CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
 
 /**
- * If conversation tokens cross `CORTEX_OBSERVE_THRESHOLD * this` before
+ * If uncompressed tokens cross `CORTEX_OBSERVE_THRESHOLD * this` before
  * the async worker completes, fall back to synchronous compression in
  * the PostToolUse hook itself. Safety net against losing observations
  * to Claude Code's own compaction.

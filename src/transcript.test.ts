@@ -64,6 +64,26 @@ describe("readTranscript", () => {
     expect(t[0].content).toContain("[tool_use Bash:");
   });
 
+  test("parses real Claude Code envelope lines (type + message wrapper)", () => {
+    const path = writeTranscript("envelope", [
+      { type: "last-prompt", leafUuid: "x", sessionId: "s" },
+      { type: "user", message: { role: "user", content: "user says hi" }, sessionId: "s" },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "assistant replies" }] },
+        sessionId: "s",
+      },
+    ]);
+    const t = readTranscript(path);
+    expect(t.length).toBe(3);
+    // Non-message lines fall back to their top-level `type` as the role.
+    expect(t[0].role).toBe("last-prompt");
+    expect(t[1].role).toBe("user");
+    expect(t[1].content).toBe("user says hi");
+    expect(t[2].role).toBe("assistant");
+    expect(t[2].content).toContain("assistant replies");
+  });
+
   test("skips malformed lines but keeps index alignment", () => {
     const path = join(tmpRoot, "malformed.jsonl");
     writeFileSync(

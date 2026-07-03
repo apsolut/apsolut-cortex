@@ -322,6 +322,10 @@ async function getDb() {
 `);
     }
     _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch {}
   }
   if (!_initialized) {
     await runMigrations(_db);
@@ -638,7 +642,17 @@ Respond ONLY with valid JSON:`,
 }
 function parseResult(raw) {
   const clean = raw.replace(/```json|```/g, "").trim();
-  const parsed = JSON.parse(clean);
+  let parsed;
+  try {
+    parsed = JSON.parse(clean);
+  } catch {
+    const start = clean.indexOf("{");
+    const end = clean.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      throw new Error(`compression output was not JSON: ${clean.slice(0, 120)}`);
+    }
+    parsed = JSON.parse(clean.slice(start, end + 1));
+  }
   return {
     memories: Array.isArray(parsed.memories) ? parsed.memories : [],
     summary: typeof parsed.summary === "string" ? parsed.summary : ""
@@ -777,7 +791,7 @@ function countTokens(text) {
     return 0;
   return encode(text).length;
 }
-function countTranscriptTokens(transcriptPath) {
+function countTranscriptTokens(transcriptPath, fromMsgIdx = 0) {
   let raw;
   try {
     raw = readFileSync2(transcriptPath, "utf-8");
@@ -785,6 +799,7 @@ function countTranscriptTokens(transcriptPath) {
     return 0;
   }
   let total = 0;
+  let idx = 0;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim())
       continue;
@@ -792,16 +807,20 @@ function countTranscriptTokens(transcriptPath) {
     try {
       msg = JSON.parse(line);
     } catch {
+      idx++;
       continue;
     }
-    total += countTokens(flattenMessageContent(msg));
+    if (idx >= fromMsgIdx)
+      total += countTokens(flattenMessageContent(msg));
+    idx++;
   }
   return total;
 }
 function flattenMessageContent(msg) {
   if (!msg || typeof msg !== "object")
     return "";
-  const m = msg;
+  const outer = msg;
+  const m = outer.message && typeof outer.message === "object" ? outer.message : msg;
   if (typeof m.content === "string")
     return m.content;
   if (!Array.isArray(m.content))
@@ -909,7 +928,7 @@ function tryAcquireLock(sessionId) {
     }
   }
   try {
-    writeFileSync2(path, String(process.pid));
+    writeFileSync2(path, String(process.pid), { flag: "wx" });
     return true;
   } catch {
     return false;
@@ -947,7 +966,9 @@ function readTranscript(transcriptPath) {
       idx++;
       continue;
     }
-    const role = msg && typeof msg === "object" && typeof msg.role === "string" ? msg.role : "unknown";
+    const obj = msg && typeof msg === "object" ? msg : {};
+    const inner = obj.message && typeof obj.message === "object" ? obj.message : null;
+    const role = typeof inner?.role === "string" ? inner.role : typeof obj.role === "string" ? obj.role : typeof obj.type === "string" ? obj.type : "unknown";
     out.push({
       msg_idx: idx,
       role,
@@ -1106,7 +1127,7 @@ async function main() {
     }
     const transcriptPath = data.transcript_path;
     if (transcriptPath) {
-      const tokens = countTranscriptTokens(transcriptPath);
+      const tokens = countTranscriptTokens(transcriptPath, readCursor(sessionId));
       const blockThreshold = CORTEX_OBSERVE_THRESHOLD * CORTEX_OBSERVE_BLOCK_MULT;
       if (tokens >= blockThreshold) {
         if (tryAcquireLock(sessionId)) {
@@ -1128,7 +1149,7 @@ async function main() {
         }
       } else if (tokens >= CORTEX_OBSERVE_THRESHOLD) {
         try {
-          const child = spawn(process.argv[0], [process.argv[1], "hook:compress-worker"], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
+          const child = spawn(process.execPath, [process.argv[1], "hook:compress-worker"], { detached: true, stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
           const payload = JSON.stringify({
             session_id: sessionId,
             cwd,

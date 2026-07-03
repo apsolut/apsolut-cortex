@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync as writeFileSync3
 } from "fs";
-import { join as join5, resolve, dirname as dirname3 } from "path";
+import { join as join5, resolve, dirname as dirname3, sep } from "path";
 import { homedir as homedir3 } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 
@@ -343,6 +343,10 @@ async function getDb() {
 `);
     }
     _db = key ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key }) : createClient({ url: `file:${DB_PATH}` });
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch {}
   }
   if (!_initialized) {
     await runMigrations(_db);
@@ -638,6 +642,12 @@ function snapshot(label = "manual") {
   ensureBackupDir();
   const dest = join3(BACKUP_DIR, `${label}-${timestamp()}.db`);
   copyFileSync(DB_PATH, dest);
+  const wal = `${DB_PATH}-wal`;
+  if (existsSync4(wal)) {
+    try {
+      copyFileSync(wal, `${dest}-wal`);
+    } catch {}
+  }
   return dest;
 }
 function listBackups() {
@@ -681,6 +691,12 @@ function restore(snapshotPath) {
     }
   }
   renameSync2(tmp, DB_PATH);
+  const snapshotWal = `${snapshotPath}-wal`;
+  if (existsSync4(snapshotWal)) {
+    try {
+      copyFileSync(snapshotWal, `${DB_PATH}-wal`);
+    } catch {}
+  }
   return { restored: snapshotPath, safetyBackup };
 }
 var COPY_TABLES = [
@@ -1212,7 +1228,7 @@ async function applyDeletion(db, filters) {
 var __filename2 = fileURLToPath(import.meta.url);
 var __dirname2 = dirname3(__filename2);
 var PACKAGE_ROOT = resolve(__dirname2, "..");
-var IS_DIST = __dirname2.endsWith("dist") || __dirname2.includes(`${process.sep}dist${process.sep}`);
+var IS_DIST = __dirname2.endsWith("dist") || __dirname2.includes(`${sep}dist${sep}`);
 var PKG_VERSION = JSON.parse(readFileSync3(join5(PACKAGE_ROOT, "package.json"), "utf-8")).version;
 var PROJECT_ROOT = process.cwd();
 var CLAUDE_SETTINGS = join5(homedir3(), ".claude", "settings.json");
@@ -1741,7 +1757,7 @@ async function deleteCmd(args) {
   }
 }
 async function installHooksCmd(args) {
-  const template = IS_DIST ? join5(PACKAGE_ROOT, "templates", "hooks-m6.json") : join5(PACKAGE_ROOT, "templates", "hooks-m6.json");
+  const template = join5(PACKAGE_ROOT, "templates", "hooks-m6.json");
   if (!existsSync6(template)) {
     console.log(`[apsolut-cortex] template missing: ${template}`);
     process.exitCode = 1;
@@ -1945,7 +1961,7 @@ function uninstall() {
       const settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
       const hooks = settings.hooks;
       if (hooks) {
-        for (const event of ["SessionStart", "PostToolUse", "Stop", "SessionEnd"]) {
+        for (const event of ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"]) {
           if (hooks[event]) {
             hooks[event] = hooks[event].filter((e) => {
               if (typeof e !== "object")

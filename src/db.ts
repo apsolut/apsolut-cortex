@@ -53,6 +53,15 @@ export async function getDb(): Promise<Client> {
     _db = key
       ? createClient({ url: `file:${DB_PATH}`, encryptionKey: key })
       : createClient({ url: `file:${DB_PATH}` });
+
+    // journal_mode=WAL (migration 001) persists in the DB file, but
+    // busy_timeout and synchronous reset per connection. Without a busy
+    // timeout, concurrent hook processes (PostToolUse + detached worker +
+    // MCP server) fail immediately with SQLITE_BUSY instead of waiting.
+    try {
+      await _db.execute("PRAGMA busy_timeout = 5000");
+      await _db.execute("PRAGMA synchronous = NORMAL");
+    } catch { /* non-fatal */ }
   }
 
   if (!_initialized) {
