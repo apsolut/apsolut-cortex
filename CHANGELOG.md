@@ -17,6 +17,9 @@ Fixes from the 2026-07-03 pre-release deep review (P1 batch).
 - **7 strict-mode TypeScript errors** in cli.ts, embed.ts, session-start.ts, and mcp/server.ts. `tsc --noEmit` is now enforced via a `typecheck` script wired into `prepublishOnly` and a new GitHub Actions CI workflow (typecheck + tests on push/PR).
 - **Windows: libSQL file handles are released deterministically** during backup/re-encrypt file swaps (Bun frees the handle only at GC; the retry loops now nudge GC). Also cuts the backup test suite from ~9s to under 1s.
 
+### Known limitations
+- **M3 encryption does not work on native Linux** — libSQL's local `encryptionKey` mode fails with `SQLITE_IOERR` (encrypted DB cannot be read back). Discovered by the first CI run on ubuntu-latest; the re-encrypt test suite is skipped on Linux and the README stability note now says so. Windows and macOS unaffected.
+
 ## [0.12.6] – 2026-05-25
 
 ### Changed
