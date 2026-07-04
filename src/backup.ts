@@ -165,6 +165,18 @@ export function restore(snapshotPath: string): { restored: string; safetyBackup:
 // ── Re-encryption ──────────────────────────────────────────────────────────
 
 /**
+ * libSQL's local encryptionKey mode produces a DB that cannot be read back
+ * on native Linux (SQLITE_IOERR on first execute) — found by CI on
+ * ubuntu-latest. Returns a human-readable reason when re-encryption must be
+ * refused on this platform, or null when it is supported.
+ */
+export function reencryptUnsupportedReason(): string | null {
+  return process.platform === "linux"
+    ? "libSQL local encryption is not supported on Linux — the encrypted DB cannot be read back (SQLITE_IOERR). See README → Stability notes."
+    : null;
+}
+
+/**
  * Preferred copy order — foreign-key parents first. Which tables get copied
  * is discovered from the source DB at runtime (see listUserTables); this
  * list only orders the known ones. _migrations is recreated by runMigrations,

@@ -13,7 +13,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createClient } from "@libsql/client";
 import { runMigrations } from "./migrations/runner.js";
-import { reencryptPathToKey } from "./backup.js";
+import { reencryptPathToKey, reencryptUnsupportedReason } from "./backup.js";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "apsolut-cortex-backup-test-"));
 const tempDbs: string[] = [];
@@ -32,6 +32,25 @@ afterAll(() => {
     }
   }
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+});
+
+// Runs on every platform — on Linux it exercises the real refusal branch,
+// elsewhere the platform is stubbed to verify both directions.
+describe("reencryptUnsupportedReason", () => {
+  test("refuses on linux, allows win32 and darwin", () => {
+    const original = process.platform;
+    const set = (v: string) => Object.defineProperty(process, "platform", { value: v });
+    try {
+      set("linux");
+      expect(reencryptUnsupportedReason()).toContain("not supported on Linux");
+      set("win32");
+      expect(reencryptUnsupportedReason()).toBeNull();
+      set("darwin");
+      expect(reencryptUnsupportedReason()).toBeNull();
+    } finally {
+      set(original);
+    }
+  });
 });
 
 // libSQL's local encryptionKey mode fails with SQLITE_IOERR on native Linux

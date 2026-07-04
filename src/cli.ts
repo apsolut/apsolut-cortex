@@ -28,7 +28,7 @@ import { runMigrations } from "./migrations/runner.js";
 import { getLastRetrieval, logCorrection } from "./logs.js";
 import { embed } from "./embed.js";
 import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
-import { snapshot, listBackups, restore, reencryptToKey, BACKUP_DIR } from "./backup.js";
+import { snapshot, listBackups, restore, reencryptToKey, reencryptUnsupportedReason, BACKUP_DIR } from "./backup.js";
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 import { exportVault, OBSIDIAN_DIR } from "./export.js";
 import { getBreakerState } from "./compress.js";
@@ -697,6 +697,14 @@ async function restoreCmd(target: string | undefined, args: string[]) {
 async function dbCmd(sub: string | undefined, args: string[]) {
   switch (sub) {
     case "re-encrypt": {
+      const unsupported = reencryptUnsupportedReason();
+      if (unsupported) {
+        console.log(`[apsolut-cortex] db re-encrypt is disabled on this platform.`);
+        console.log(`  ${unsupported}`);
+        console.log(`  Your DB was not modified.`);
+        process.exitCode = 1;
+        return;
+      }
       const existing = getDbKey();
       if (existing) {
         console.log(`[apsolut-cortex] An encryption key is already set in the OS keychain.`);

@@ -704,6 +704,9 @@ function restore(snapshotPath) {
   }
   return { restored: snapshotPath, safetyBackup };
 }
+function reencryptUnsupportedReason() {
+  return process.platform === "linux" ? "libSQL local encryption is not supported on Linux — the encrypted DB cannot be read back (SQLITE_IOERR). See README → Stability notes." : null;
+}
 var COPY_TABLES = [
   "projects",
   "sessions",
@@ -1887,6 +1890,14 @@ async function restoreCmd(target, args) {
 async function dbCmd(sub, args) {
   switch (sub) {
     case "re-encrypt": {
+      const unsupported = reencryptUnsupportedReason();
+      if (unsupported) {
+        console.log(`[apsolut-cortex] db re-encrypt is disabled on this platform.`);
+        console.log(`  ${unsupported}`);
+        console.log(`  Your DB was not modified.`);
+        process.exitCode = 1;
+        return;
+      }
       const existing = getDbKey();
       if (existing) {
         console.log(`[apsolut-cortex] An encryption key is already set in the OS keychain.`);

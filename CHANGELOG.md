@@ -18,7 +18,7 @@ Fixes from the 2026-07-03 pre-release deep review (P1 batch).
 - **Windows: libSQL file handles are released deterministically** during backup/re-encrypt file swaps (Bun frees the handle only at GC; the retry loops now nudge GC). Also cuts the backup test suite from ~9s to under 1s.
 
 ### Known limitations
-- **M3 encryption does not work on native Linux** — libSQL's local `encryptionKey` mode fails with `SQLITE_IOERR` (encrypted DB cannot be read back). Discovered by the first CI run on ubuntu-latest; the re-encrypt test suite is skipped on Linux and the README stability note now says so. Windows and macOS unaffected.
+- **M3 encryption does not work on native Linux** — libSQL's local `encryptionKey` mode fails with `SQLITE_IOERR` (encrypted DB cannot be read back). Discovered by the first CI run on ubuntu-latest; the re-encrypt test suite is skipped on Linux and the README stability note now says so. Windows and macOS unaffected. `db re-encrypt` now refuses on Linux with a clear message instead of producing an unreadable database.
 
 ## [0.12.6] – 2026-05-25
 
