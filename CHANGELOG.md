@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.8] – 2026-07-04
+
+Fixes from the 2026-07-03 pre-release deep review (P1 batch).
+
+### Fixed
+- **Compression failure is now loud and non-destructive.** Provider failure (no `ANTHROPIC_API_KEY`, Ollama unreachable, or circuit breaker open) was previously indistinguishable from "nothing worth keeping": SessionEnd marked observations promoted and the in-session worker advanced the compression cursor, permanently consuming captured work with zero memories extracted. `compressSession` now returns `null` on failure; observations stay unprocessed, the cursor stays put, and the SessionEnd hook emits a visible `systemMessage` telling the user compression failed and why. `apsolut-cortex status` now shows circuit-breaker state (recent failures + last-failure age).
+- **BM25 search matches non-adjacent terms.** The FTS5 query wrapped the entire search string as a single quoted phrase, so any multi-word query whose words weren't contiguous in a memory returned zero BM25 results (e.g. "libsql credential manager" missed "libsql encryption key … Credential Manager"). Terms are now quoted individually and OR-joined; injection safety (quote doubling) is preserved.
+- **`db re-encrypt` no longer drops tables.** The copy list was hardcoded to the five Phase-1 tables and silently dropped `raw_messages` (all raw transcripts) and `memory_tags` during re-encryption. The table list is now derived from the source database's `sqlite_master` (FTS shadow tables excluded — triggers repopulate them), so future migration-added tables survive automatically. An unknown-table failure now aborts before the swap with the source DB untouched.
+- **7 strict-mode TypeScript errors** in cli.ts, embed.ts, session-start.ts, and mcp/server.ts. `tsc --noEmit` is now enforced via a `typecheck` script wired into `prepublishOnly` and a new GitHub Actions CI workflow (typecheck + tests on push/PR).
+- **Windows: libSQL file handles are released deterministically** during backup/re-encrypt file swaps (Bun frees the handle only at GC; the retry loops now nudge GC). Also cuts the backup test suite from ~9s to under 1s.
+
 ## [0.12.6] – 2026-05-25
 
 ### Changed

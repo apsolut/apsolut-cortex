@@ -664,7 +664,7 @@ async function compressSession(observations, project) {
   }
   if (isBreakerOpen()) {
     console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
-    return { memories: [], summary: "" };
+    return null;
   }
   if (process.env.ANTHROPIC_API_KEY) {
     try {
@@ -703,7 +703,7 @@ async function compressSession(observations, project) {
     ].join(`
 `);
     console.error(msg);
-    return { memories: [], summary: "" };
+    return null;
   }
 }
 function classifyToolUse(toolName, toolInput, toolResponse) {
@@ -1023,7 +1023,17 @@ async function compressSlice(args) {
     content: `[${m.role}] ${m.content}`,
     category: null
   }));
-  const { memories } = await compressSession(observations, projectName);
+  const compression = await compressSession(observations, projectName);
+  if (!compression) {
+    return {
+      raw_persisted: transcript.length,
+      memories_stored: 0,
+      duplicates_bumped: 0,
+      new_cursor: cursor,
+      failed: true
+    };
+  }
+  const { memories } = compression;
   let stored = 0;
   let bumped = 0;
   for (const mem of memories) {

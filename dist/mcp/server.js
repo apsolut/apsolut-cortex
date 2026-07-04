@@ -499,7 +499,10 @@ async function getMemoryWithRange(db, memoryId) {
   return { memory, rawMessages };
 }
 async function searchBM25(db, projectId, query, limit) {
-  const escaped = `"${query.replace(/"/g, '""')}"`;
+  const tokens = query.split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length === 0)
+    return [];
+  const escaped = tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
   const result = await db.execute({
     sql: `SELECT m.* FROM memories_fts
           JOIN memories m ON m.rowid = memories_fts.rowid

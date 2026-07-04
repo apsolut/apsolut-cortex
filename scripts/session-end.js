@@ -768,7 +768,7 @@ async function compressSession(observations, project) {
   }
   if (isBreakerOpen()) {
     console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
-    return { memories: [], summary: "" };
+    return null;
   }
   if (process.env.ANTHROPIC_API_KEY) {
     try {
@@ -807,7 +807,7 @@ async function compressSession(observations, project) {
     ].join(`
 `);
     console.error(msg);
-    return { memories: [], summary: "" };
+    return null;
   }
 }
 
@@ -1376,7 +1376,17 @@ async function compressSlice(args) {
     content: `[${m.role}] ${m.content}`,
     category: null
   }));
-  const { memories } = await compressSession(observations, projectName);
+  const compression = await compressSession(observations, projectName);
+  if (!compression) {
+    return {
+      raw_persisted: transcript.length,
+      memories_stored: 0,
+      duplicates_bumped: 0,
+      new_cursor: cursor,
+      failed: true
+    };
+  }
+  const { memories } = compression;
   let stored = 0;
   let bumped = 0;
   for (const mem of memories) {
@@ -1469,7 +1479,11 @@ async function maybeReflect(db, sessionId, projectId, projectName) {
     content: m.content,
     category: m.category
   }));
-  const { memories: reflections } = await compressSession(observations, projectName);
+  const compression = await compressSession(observations, projectName);
+  if (!compression) {
+    return { source_memories: total, source_tokens: tokens, reflections_stored: 0, triggered: false };
+  }
+  const { memories: reflections } = compression;
   let stored = 0;
   for (const r of reflections) {
     const textToEmbed = r.context ? `${r.content} ${r.context}` : r.content;
@@ -1554,7 +1568,9 @@ async function main() {
     if (currentHashes.length > 0)
       await snapshotFileHashes(db, project.id, currentHashes);
     const projectContext = changedFiles.length > 0 ? `${project.name} (files changed: ${changedFiles.join(", ")})` : project.name;
-    const { memories, summary } = await compressSession(observations, projectContext);
+    const compression = await compressSession(observations, projectContext);
+    let compressionFailed = compression === null;
+    const { memories, summary } = compression ?? { memories: [], summary: "" };
     const tx = await db.transaction("write");
     try {
       let stored = 0;
@@ -1588,7 +1604,7 @@ async function main() {
         });
         stored++;
       }
-      if (observations.length > 0) {
+      if (observations.length > 0 && !compressionFailed) {
         await markProjectObservationsPromoted(tx, project.id);
       }
       await upsertSession(tx, {
@@ -1617,6 +1633,8 @@ async function main() {
           transcriptPath,
           source: "session-end"
         });
+        if (result.failed)
+          compressionFailed = true;
         if (result.memories_stored > 0 || result.raw_persisted > 0) {
           console.error(`[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`);
         }
@@ -1626,6 +1644,9 @@ async function main() {
         if (got)
           releaseLock2(sessionId);
       }
+    }
+    if (compressionFailed) {
+      console.log(JSON.stringify({ systemMessage: "apsolut-cortex: session compression failed (no provider available) — observations kept for next session. Set ANTHROPIC_API_KEY or run Ollama." }));
     }
     try {
       const ref = await maybeReflect(db, sessionId, project.id, project.name);

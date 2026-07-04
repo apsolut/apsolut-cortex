@@ -2,14 +2,14 @@
 
 // src/cli.ts
 import {
-  existsSync as existsSync6,
+  existsSync as existsSync7,
   mkdirSync as mkdirSync6,
-  readFileSync as readFileSync3,
+  readFileSync as readFileSync4,
   rmSync,
-  writeFileSync as writeFileSync3
+  writeFileSync as writeFileSync4
 } from "fs";
-import { join as join5, resolve, dirname as dirname3, sep } from "path";
-import { homedir as homedir3 } from "os";
+import { join as join6, resolve, dirname as dirname3, sep } from "path";
+import { homedir as homedir4 } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
 
 // src/registry.ts
@@ -595,6 +595,9 @@ import {
 } from "fs";
 import { join as join3 } from "path";
 import { createClient as createClient2 } from "@libsql/client";
+function releaseStaleHandles() {
+  globalThis.Bun?.gc(true);
+}
 async function unlinkRetry(path, attempts = 10) {
   for (let i = 0;i < attempts; i++) {
     try {
@@ -606,6 +609,7 @@ async function unlinkRetry(path, attempts = 10) {
         throw e;
       if (code === "ENOENT")
         return;
+      releaseStaleHandles();
       await new Promise((r) => setTimeout(r, 25 + i * 25));
     }
   }
@@ -620,6 +624,7 @@ async function renameRetry(from, to, attempts = 10) {
       const code = e.code;
       if (code !== "EBUSY" && code !== "EPERM")
         throw e;
+      releaseStaleHandles();
       await new Promise((r) => setTimeout(r, 25 + i * 25));
     }
   }
@@ -704,8 +709,17 @@ var COPY_TABLES = [
   "sessions",
   "observations",
   "memories",
-  "file_hashes"
+  "file_hashes",
+  "raw_messages",
+  "memory_tags"
 ];
+async function listUserTables(src) {
+  const result = await src.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'");
+  const names = result.rows.map((r) => String(r.name)).filter((n) => n !== "memories_fts" && !n.startsWith("memories_fts_"));
+  const known = COPY_TABLES.filter((t) => names.includes(t));
+  const rest = names.filter((n) => !COPY_TABLES.includes(n)).sort();
+  return [...known, ...rest];
+}
 async function copyTable(src, dst, table) {
   const rows = await src.execute(`SELECT * FROM ${table}`);
   if (rows.rows.length === 0)
@@ -732,7 +746,7 @@ async function reencryptPathToKey(sourcePath, encryptionKey) {
   try {
     dst = createClient2({ url: `file:${newPath}`, encryptionKey });
     await runMigrations(dst);
-    for (const table of COPY_TABLES) {
+    for (const table of await listUserTables(src)) {
       rowsCopied[table] = await copyTable(src, dst, table);
     }
   } catch (err) {
@@ -1112,6 +1126,24 @@ async function exportVault(db, opts = {}) {
   };
 }
 
+// src/compress.ts
+import Anthropic from "@anthropic-ai/sdk";
+import { existsSync as existsSync6, readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameSync as renameSync3 } from "fs";
+import { join as join5 } from "path";
+import { homedir as homedir3 } from "os";
+var BREAKER_PATH = join5(homedir3(), ".apsolut-cortex", "compression-state.json");
+var COOLDOWN_MS = 60 * 60 * 1000;
+function readBreaker() {
+  try {
+    if (existsSync6(BREAKER_PATH))
+      return JSON.parse(readFileSync3(BREAKER_PATH, "utf-8"));
+  } catch {}
+  return { failures: 0, lastFailure: 0 };
+}
+function getBreakerState() {
+  return readBreaker();
+}
+
 // src/curation.ts
 var TRUST_ORDER = ["observed", "validated", "proven", "canonical"];
 async function changeTrust(db, id, direction) {
@@ -1229,12 +1261,12 @@ var __filename2 = fileURLToPath(import.meta.url);
 var __dirname2 = dirname3(__filename2);
 var PACKAGE_ROOT = resolve(__dirname2, "..");
 var IS_DIST = __dirname2.endsWith("dist") || __dirname2.includes(`${sep}dist${sep}`);
-var PKG_VERSION = JSON.parse(readFileSync3(join5(PACKAGE_ROOT, "package.json"), "utf-8")).version;
+var PKG_VERSION = JSON.parse(readFileSync4(join6(PACKAGE_ROOT, "package.json"), "utf-8")).version;
 var PROJECT_ROOT = process.cwd();
-var CLAUDE_SETTINGS = join5(homedir3(), ".claude", "settings.json");
-var MCP_JSON = join5(PROJECT_ROOT, ".mcp.json");
-var PROJECT_APSOLUT = join5(PROJECT_ROOT, ".apsolut-cortex");
-var PROJECT_CONFIG = join5(PROJECT_APSOLUT, "project.json");
+var CLAUDE_SETTINGS = join6(homedir4(), ".claude", "settings.json");
+var MCP_JSON = join6(PROJECT_ROOT, ".mcp.json");
+var PROJECT_APSOLUT = join6(PROJECT_ROOT, ".apsolut-cortex");
+var PROJECT_CONFIG = join6(PROJECT_APSOLUT, "project.json");
 var cmd = process.argv[2];
 switch (cmd) {
   case "init":
@@ -1340,8 +1372,8 @@ switch (cmd) {
 `);
 }
 async function runHook(name) {
-  const hookPath = IS_DIST ? join5(PACKAGE_ROOT, "scripts", `${name}.js`) : join5(__dirname2, "hooks", `${name}.ts`);
-  if (!existsSync6(hookPath)) {
+  const hookPath = IS_DIST ? join6(PACKAGE_ROOT, "scripts", `${name}.js`) : join6(__dirname2, "hooks", `${name}.ts`);
+  if (!existsSync7(hookPath)) {
     process.stderr.write(`[apsolut-cortex] hook not found: ${hookPath}
 `);
     process.exit(0);
@@ -1352,20 +1384,20 @@ async function init() {
   console.log(`
 [apsolut-cortex] init
 `);
-  if (!existsSync6(PROJECT_APSOLUT)) {
+  if (!existsSync7(PROJECT_APSOLUT)) {
     mkdirSync6(PROJECT_APSOLUT, { recursive: true });
   }
   let projectId;
   let projectName;
-  if (existsSync6(PROJECT_CONFIG)) {
-    const existing = JSON.parse(readFileSync3(PROJECT_CONFIG, "utf-8"));
+  if (existsSync7(PROJECT_CONFIG)) {
+    const existing = JSON.parse(readFileSync4(PROJECT_CONFIG, "utf-8"));
     projectId = existing.id;
     projectName = existing.name;
     console.log(`[apsolut-cortex] ✓ Project already initialised: ${projectName}`);
   } else {
     projectId = crypto.randomUUID();
     projectName = PROJECT_ROOT.split(/[\\/]/).filter(Boolean).pop() ?? "project";
-    writeFileSync3(PROJECT_CONFIG, JSON.stringify({
+    writeFileSync4(PROJECT_CONFIG, JSON.stringify({
       id: projectId,
       name: projectName,
       created_at: new Date().toISOString()
@@ -1376,13 +1408,13 @@ async function init() {
   }
   registerProject(projectId, projectName, PROJECT_ROOT);
   console.log(`[apsolut-cortex] ✓ Registered in ~/.apsolut-cortex/registry.json`);
-  const mcpServerPath = IS_DIST ? join5(__dirname2, "mcp", "server.js") : join5(__dirname2, "mcp", "server.ts");
+  const mcpServerPath = IS_DIST ? join6(__dirname2, "mcp", "server.js") : join6(__dirname2, "mcp", "server.ts");
   const mcpCommand = IS_DIST ? "node" : "bun";
   const mcpArgs = [mcpServerPath];
   let mcp = {};
-  if (existsSync6(MCP_JSON)) {
+  if (existsSync7(MCP_JSON)) {
     try {
-      mcp = JSON.parse(readFileSync3(MCP_JSON, "utf-8"));
+      mcp = JSON.parse(readFileSync4(MCP_JSON, "utf-8"));
     } catch {}
   }
   const servers = mcp.mcpServers ?? {};
@@ -1392,9 +1424,9 @@ async function init() {
     env: { APSOLUT_PROJECT_PATH: PROJECT_ROOT }
   };
   mcp.mcpServers = servers;
-  writeFileSync3(MCP_JSON, JSON.stringify(mcp, null, 2));
+  writeFileSync4(MCP_JSON, JSON.stringify(mcp, null, 2));
   console.log(`[apsolut-cortex] ✓ Written .mcp.json`);
-  const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join5(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
+  const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join6(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
   const hookEntries = {
     SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
     PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use` }] }],
@@ -1403,11 +1435,11 @@ async function init() {
   };
   let settings = {};
   const settingsDir = dirname3(CLAUDE_SETTINGS);
-  if (!existsSync6(settingsDir))
+  if (!existsSync7(settingsDir))
     mkdirSync6(settingsDir, { recursive: true });
-  if (existsSync6(CLAUDE_SETTINGS)) {
+  if (existsSync7(CLAUDE_SETTINGS)) {
     try {
-      settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
+      settings = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
     } catch {}
   }
   const existingHooks = settings.hooks ?? {};
@@ -1428,44 +1460,44 @@ async function init() {
     }
   }
   settings.hooks = existingHooks;
-  writeFileSync3(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
+  writeFileSync4(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
   console.log(added > 0 ? `[apsolut-cortex] ✓ Registered ${added} hooks in ~/.claude/settings.json` : `[apsolut-cortex] ✓ Hooks already registered`);
   const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget"];
-  const skillsSource = join5(PACKAGE_ROOT, "skills");
-  const skillsTarget = join5(homedir3(), ".claude", "skills");
-  if (!existsSync6(skillsTarget))
+  const skillsSource = join6(PACKAGE_ROOT, "skills");
+  const skillsTarget = join6(homedir4(), ".claude", "skills");
+  if (!existsSync7(skillsTarget))
     mkdirSync6(skillsTarget, { recursive: true });
   const OLD_SKILL_NAMES = ["remember", "store", "status", "forget"];
   for (const old of OLD_SKILL_NAMES) {
-    const oldSkill = join5(skillsTarget, old, "SKILL.md");
-    if (existsSync6(oldSkill)) {
-      const content = readFileSync3(oldSkill, "utf-8");
+    const oldSkill = join6(skillsTarget, old, "SKILL.md");
+    if (existsSync7(oldSkill)) {
+      const content = readFileSync4(oldSkill, "utf-8");
       if (content.includes("memory_")) {
-        rmSync(join5(skillsTarget, old), { recursive: true, force: true });
+        rmSync(join6(skillsTarget, old), { recursive: true, force: true });
       }
     }
   }
   let skillsCopied = 0;
   for (const name of SKILL_NAMES) {
-    const src = join5(skillsSource, name, "SKILL.md");
-    const destDir = join5(skillsTarget, name);
-    const dest = join5(destDir, "SKILL.md");
-    if (!existsSync6(src))
+    const src = join6(skillsSource, name, "SKILL.md");
+    const destDir = join6(skillsTarget, name);
+    const dest = join6(destDir, "SKILL.md");
+    if (!existsSync7(src))
       continue;
-    const srcContent = readFileSync3(src, "utf-8");
-    if (existsSync6(dest) && readFileSync3(dest, "utf-8") === srcContent)
+    const srcContent = readFileSync4(src, "utf-8");
+    if (existsSync7(dest) && readFileSync4(dest, "utf-8") === srcContent)
       continue;
-    if (!existsSync6(destDir))
+    if (!existsSync7(destDir))
       mkdirSync6(destDir, { recursive: true });
-    writeFileSync3(dest, srcContent);
+    writeFileSync4(dest, srcContent);
     skillsCopied++;
   }
   console.log(skillsCopied > 0 ? `[apsolut-cortex] ✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})` : `[apsolut-cortex] ✓ Skills already installed`);
-  const gitignore = join5(PROJECT_ROOT, ".gitignore");
-  if (existsSync6(gitignore)) {
-    const content = readFileSync3(gitignore, "utf-8");
+  const gitignore = join6(PROJECT_ROOT, ".gitignore");
+  if (existsSync7(gitignore)) {
+    const content = readFileSync4(gitignore, "utf-8");
     if (!content.includes(".apsolut-cortex/")) {
-      writeFileSync3(gitignore, content + `
+      writeFileSync4(gitignore, content + `
 # apsolut-cortex
 .apsolut-cortex/
 `);
@@ -1505,11 +1537,11 @@ async function init() {
   console.log(BANNER);
 }
 async function status() {
-  if (!existsSync6(PROJECT_CONFIG)) {
+  if (!existsSync7(PROJECT_CONFIG)) {
     console.log("[apsolut-cortex] No project found. Run: apsolut-cortex init");
     process.exit(1);
   }
-  const project = JSON.parse(readFileSync3(PROJECT_CONFIG, "utf-8"));
+  const project = JSON.parse(readFileSync4(PROJECT_CONFIG, "utf-8"));
   const db = await getDb();
   const totalResult = await db.execute({
     sql: "SELECT COUNT(*) as n FROM memories WHERE project_id = ?",
@@ -1554,6 +1586,12 @@ async function status() {
       const summary = r.summary.length > W - 14 ? r.summary.slice(0, W - 17) + "..." : r.summary;
       console.log(`  ${bl(`  ${age}d ago: ${summary}`)}`);
     });
+  }
+  const breaker = getBreakerState();
+  if (breaker.failures >= 1) {
+    const mins = Math.round((Date.now() - breaker.lastFailure) / 60000);
+    console.log(`  ├${hr}┤`);
+    console.log(`  ${bl(`compression: ${breaker.failures} recent failure${breaker.failures === 1 ? "" : "s"}, last ${mins}m ago`)}`);
   }
   console.log(`  ├${hr}┤`);
   console.log(`  ${bl("DB: ~/.apsolut-cortex/memory.db")}`);
@@ -1686,12 +1724,12 @@ async function grepCmd(args) {
     console.log("[apsolut-cortex] usage: apsolut-cortex grep <pattern>");
     return;
   }
-  if (!existsSync6(PROJECT_CONFIG)) {
+  if (!existsSync7(PROJECT_CONFIG)) {
     console.log("[apsolut-cortex] No project here. Run: apsolut-cortex init");
     process.exitCode = 1;
     return;
   }
-  const project = JSON.parse(readFileSync3(PROJECT_CONFIG, "utf-8"));
+  const project = JSON.parse(readFileSync4(PROJECT_CONFIG, "utf-8"));
   const db = await getDb();
   const hits = await grepMemories(db, project.id, pattern, 50);
   if (hits.length === 0) {
@@ -1757,13 +1795,13 @@ async function deleteCmd(args) {
   }
 }
 async function installHooksCmd(args) {
-  const template = join5(PACKAGE_ROOT, "templates", "hooks-m6.json");
-  if (!existsSync6(template)) {
+  const template = join6(PACKAGE_ROOT, "templates", "hooks-m6.json");
+  if (!existsSync7(template)) {
     console.log(`[apsolut-cortex] template missing: ${template}`);
     process.exitCode = 1;
     return;
   }
-  const tmpl = JSON.parse(readFileSync3(template, "utf-8"));
+  const tmpl = JSON.parse(readFileSync4(template, "utf-8"));
   const m6Events = ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"];
   if (!IS_DIST && !args.includes("--force")) {
     console.log(`[apsolut-cortex] install-hooks is intended for npm-installed users.`);
@@ -1773,11 +1811,11 @@ async function installHooksCmd(args) {
   }
   let settings = {};
   const settingsDir = dirname3(CLAUDE_SETTINGS);
-  if (!existsSync6(settingsDir))
+  if (!existsSync7(settingsDir))
     mkdirSync6(settingsDir, { recursive: true });
-  if (existsSync6(CLAUDE_SETTINGS)) {
+  if (existsSync7(CLAUDE_SETTINGS)) {
     try {
-      settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
+      settings = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
     } catch {}
   }
   const existingHooks = settings.hooks ?? {};
@@ -1795,7 +1833,7 @@ async function installHooksCmd(args) {
     existingHooks[event] = [...otherTools, ...tmplEntries];
   }
   settings.hooks = existingHooks;
-  writeFileSync3(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
+  writeFileSync4(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
   console.log(`[apsolut-cortex] ✓ Installed M6 hooks into ${CLAUDE_SETTINGS}`);
   console.log(`[apsolut-cortex]   Events wired: ${m6Events.join(", ")}`);
   console.log(`[apsolut-cortex]   Restart any open Claude Code session for the new hooks to apply.`);
@@ -1907,8 +1945,8 @@ async function evalCmd(subcommand) {
     console.log("    bun run src/cli.ts eval run");
     return;
   }
-  const evalsRoot = join5(PACKAGE_ROOT, "evals");
-  const runnerModule = pathToFileURL(join5(evalsRoot, "runner.ts")).href;
+  const evalsRoot = join6(PACKAGE_ROOT, "evals");
+  const runnerModule = pathToFileURL(join6(evalsRoot, "runner.ts")).href;
   const {
     runEvals,
     formatResult,
@@ -1946,19 +1984,19 @@ async function evalCmd(subcommand) {
   }
 }
 function uninstall() {
-  if (existsSync6(MCP_JSON)) {
+  if (existsSync7(MCP_JSON)) {
     try {
-      const mcp = JSON.parse(readFileSync3(MCP_JSON, "utf-8"));
+      const mcp = JSON.parse(readFileSync4(MCP_JSON, "utf-8"));
       if (mcp.mcpServers?.["apsolut-cortex"]) {
         delete mcp.mcpServers["apsolut-cortex"];
-        writeFileSync3(MCP_JSON, JSON.stringify(mcp, null, 2));
+        writeFileSync4(MCP_JSON, JSON.stringify(mcp, null, 2));
         console.log("[apsolut-cortex] ✓ Removed from .mcp.json");
       }
     } catch {}
   }
-  if (existsSync6(CLAUDE_SETTINGS)) {
+  if (existsSync7(CLAUDE_SETTINGS)) {
     try {
-      const settings = JSON.parse(readFileSync3(CLAUDE_SETTINGS, "utf-8"));
+      const settings = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
       const hooks = settings.hooks;
       if (hooks) {
         for (const event of ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"]) {
@@ -1973,20 +2011,20 @@ function uninstall() {
             });
           }
         }
-        writeFileSync3(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
+        writeFileSync4(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
         console.log("[apsolut-cortex] ✓ Removed hooks from ~/.claude/settings.json");
       }
     } catch {}
   }
   const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget", "remember", "store", "status", "forget"];
-  const skillsDir = join5(homedir3(), ".claude", "skills");
+  const skillsDir = join6(homedir4(), ".claude", "skills");
   let skillsRemoved = 0;
   for (const name of SKILL_NAMES) {
-    const skillFile = join5(skillsDir, name, "SKILL.md");
-    if (existsSync6(skillFile)) {
-      const content = readFileSync3(skillFile, "utf-8");
+    const skillFile = join6(skillsDir, name, "SKILL.md");
+    if (existsSync7(skillFile)) {
+      const content = readFileSync4(skillFile, "utf-8");
       if (content.includes("memory_")) {
-        rmSync(join5(skillsDir, name), { recursive: true, force: true });
+        rmSync(join6(skillsDir, name), { recursive: true, force: true });
         skillsRemoved++;
       }
     }
