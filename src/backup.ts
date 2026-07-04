@@ -22,8 +22,13 @@ import {
   unlinkSync,
 } from "fs";
 
-// Windows holds file handles briefly after libSQL's .close() returns, so
-// unlink/rename can fail with EBUSY for ~10-50ms. Retry with backoff.
+// Windows holds file handles after libSQL's .close() returns — the OS
+// handle is only released when the client is garbage-collected — so
+// unlink/rename can fail with EBUSY. Nudge GC and retry with backoff.
+function releaseStaleHandles(): void {
+  (globalThis as { Bun?: { gc: (force: boolean) => void } }).Bun?.gc(true);
+}
+
 async function unlinkRetry(path: string, attempts = 10): Promise<void> {
   for (let i = 0; i < attempts; i++) {
     try { unlinkSync(path); return; }
@@ -31,6 +36,7 @@ async function unlinkRetry(path: string, attempts = 10): Promise<void> {
       const code = (e as { code?: string }).code;
       if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOENT") throw e;
       if (code === "ENOENT") return;
+      releaseStaleHandles();
       await new Promise((r) => setTimeout(r, 25 + i * 25));
     }
   }
@@ -43,6 +49,7 @@ async function renameRetry(from: string, to: string, attempts = 10): Promise<voi
     catch (e: unknown) {
       const code = (e as { code?: string }).code;
       if (code !== "EBUSY" && code !== "EPERM") throw e;
+      releaseStaleHandles();
       await new Promise((r) => setTimeout(r, 25 + i * 25));
     }
   }
@@ -157,14 +164,35 @@ export function restore(snapshotPath: string): { restored: string; safetyBackup:
 
 // ── Re-encryption ──────────────────────────────────────────────────────────
 
-/** Tables we copy in this order. _migrations is recreated by runMigrations. */
+/**
+ * Preferred copy order — foreign-key parents first. Which tables get copied
+ * is discovered from the source DB at runtime (see listUserTables); this
+ * list only orders the known ones. _migrations is recreated by runMigrations,
+ * and memories_fts is repopulated by the AFTER INSERT trigger on memories.
+ */
 const COPY_TABLES = [
   "projects",
   "sessions",
   "observations",
   "memories",
   "file_hashes",
+  "raw_messages",
+  "memory_tags",
 ] as const;
+
+async function listUserTables(src: Client): Promise<string[]> {
+  const result = await src.execute(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
+  );
+  const names = result.rows
+    .map((r) => String(r.name))
+    .filter((n) => n !== "memories_fts" && !n.startsWith("memories_fts_"));
+  const known = COPY_TABLES.filter((t) => names.includes(t));
+  const rest = names
+    .filter((n) => !(COPY_TABLES as readonly string[]).includes(n))
+    .sort();
+  return [...known, ...rest];
+}
 
 async function copyTable(src: Client, dst: Client, table: string): Promise<number> {
   const rows = await src.execute(`SELECT * FROM ${table}`);
@@ -216,7 +244,7 @@ export async function reencryptPathToKey(
     dst = createClient({ url: `file:${newPath}`, encryptionKey });
     await runMigrations(dst);
 
-    for (const table of COPY_TABLES) {
+    for (const table of await listUserTables(src)) {
       rowsCopied[table] = await copyTable(src, dst, table);
     }
   } catch (err) {

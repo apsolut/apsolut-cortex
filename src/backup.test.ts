@@ -84,6 +84,75 @@ describe("reencryptPathToKey — round trip", () => {
     }
   });
 
+  test("copies every user table including raw_messages and memory_tags", async () => {
+    const path = tempDbPath("alltables");
+    const now = Date.now();
+    {
+      const src = createClient({ url: `file:${path}` });
+      await runMigrations(src);
+      await src.execute({
+        sql: "INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)",
+        args: ["p-1", "all-tables", "/tmp/all", now],
+      });
+      await src.execute({
+        sql: "INSERT INTO sessions (id, project_id, started_at) VALUES (?, ?, ?)",
+        args: ["s-1", "p-1", now],
+      });
+      await src.execute({
+        sql: "INSERT INTO observations (id, session_id, project_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+        args: ["o-1", "s-1", "p-1", "an observation", now],
+      });
+      await src.execute({
+        sql: "INSERT INTO memories (id, project_id, tier, category, trust, content, source, weight, used_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        args: ["m-1", "p-1", "semantic", "fact", "validated", "memory with tags", "test", 1.0, 0, now],
+      });
+      await src.execute({
+        sql: "INSERT INTO file_hashes (project_id, path, hash, updated_at) VALUES (?, ?, ?, ?)",
+        args: ["p-1", "src/a.ts", "abc123", now],
+      });
+      await src.execute({
+        sql: "INSERT INTO raw_messages (session_id, msg_idx, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+        args: ["s-1", 0, "user", "hello", now],
+      });
+      await src.execute({
+        sql: "INSERT INTO raw_messages (session_id, msg_idx, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+        args: ["s-1", 1, "assistant", "hi there", now],
+      });
+      await src.execute({
+        sql: "INSERT INTO memory_tags (memory_id, tag, created_at) VALUES (?, ?, ?)",
+        args: ["m-1", "important", now],
+      });
+      src.close();
+    }
+
+    const key = "all-tables-test-key";
+    const result = await reencryptPathToKey(path, key);
+    expect(result.rows_copied.projects).toBe(1);
+    expect(result.rows_copied.sessions).toBe(1);
+    expect(result.rows_copied.observations).toBe(1);
+    expect(result.rows_copied.memories).toBe(1);
+    expect(result.rows_copied.file_hashes).toBe(1);
+    expect(result.rows_copied.raw_messages).toBe(2);
+    expect(result.rows_copied.memory_tags).toBe(1);
+
+    const dst = createClient({ url: `file:${path}`, encryptionKey: key });
+    const counts: Record<string, number> = {};
+    for (const table of ["projects", "sessions", "observations", "memories", "file_hashes", "raw_messages", "memory_tags"]) {
+      const r = await dst.execute(`SELECT COUNT(*) as n FROM ${table}`);
+      counts[table] = Number(r.rows[0]?.n);
+    }
+    expect(counts).toEqual({
+      projects: 1,
+      sessions: 1,
+      observations: 1,
+      memories: 1,
+      file_hashes: 1,
+      raw_messages: 2,
+      memory_tags: 1,
+    });
+    dst.close();
+  });
+
   test("FTS5 search still works after re-encryption", async () => {
     const path = tempDbPath("fts");
     {
