@@ -152,7 +152,7 @@ async function main() {
         sql: "SELECT summary, ended_at FROM sessions WHERE project_id = ? AND summary IS NOT NULL ORDER BY ended_at DESC LIMIT 1",
         args: [project.id],
       });
-      const lastSession = lastSessionResult.rows[0] as { summary: string; ended_at: number } | undefined;
+      const lastSession = lastSessionResult.rows[0] as unknown as { summary: string; ended_at: number } | undefined;
 
       if (lastSession?.summary) {
         out.push(ln(`Last session (${formatAgo(lastSession.ended_at)}):`));
@@ -180,7 +180,7 @@ async function main() {
               LIMIT 20`,
         args: [project.id],
       });
-      const memories = memoriesResult.rows as Array<{ content: string; category: string }>;
+      const memories = memoriesResult.rows as unknown as Array<{ content: string; category: string }>;
 
       if (memories.length > 0) {
         out.push(ln("Key memories:"));

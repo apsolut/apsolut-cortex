@@ -1,14 +1,14 @@
-import { pipeline, env } from "@huggingface/transformers";
+import { pipeline, env, type FeatureExtractionPipeline } from "@huggingface/transformers";
 import { MODELS_DIR } from "./db.js";
 
 env.cacheDir = MODELS_DIR;
 env.allowRemoteModels = true;
 
-let _embedder: Awaited<ReturnType<typeof pipeline>> | null = null;
+let _embedder: FeatureExtractionPipeline | null = null;
 
 async function getEmbedder() {
   if (_embedder) return _embedder;
-  _embedder = await pipeline(
+  _embedder = await pipeline<"feature-extraction">(
     "feature-extraction",
     "Xenova/all-MiniLM-L6-v2"
   );

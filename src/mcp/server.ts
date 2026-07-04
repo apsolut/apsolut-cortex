@@ -533,7 +533,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           args: [p.id],
         });
 
-        const stats = statsResult.rows as Array<{
+        const stats = statsResult.rows as unknown as Array<{
           tier: string; category: string; trust: string;
           count: number; avg_weight: number; total_uses: number;
         }>;

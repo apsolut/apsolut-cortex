@@ -343,7 +343,7 @@ async function status() {
     sql: "SELECT trust, COUNT(*) as n FROM memories WHERE project_id = ? GROUP BY trust",
     args: [project.id],
   });
-  const byTrust = byTrustResult.rows as Array<{ trust: string; n: number }>;
+  const byTrust = byTrustResult.rows as unknown as Array<{ trust: string; n: number }>;
 
   const recentResult = await db.execute({
     sql: `SELECT summary, started_at FROM sessions
@@ -351,7 +351,7 @@ async function status() {
           ORDER BY started_at DESC LIMIT 3`,
     args: [project.id],
   });
-  const recent = recentResult.rows as Array<{ summary: string; started_at: number }>;
+  const recent = recentResult.rows as unknown as Array<{ summary: string; started_at: number }>;
 
   const W = 50;
   const hr = "─".repeat(W - 2);
