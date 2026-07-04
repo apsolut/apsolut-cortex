@@ -1,6 +1,6 @@
 # Dependencies
 node_modules/
-REVIEW-2026-07-03.md
+REVIEW-*.md
 # Per-project identity (generated on init, unique per install)
 .apsolut-cortex/
 
