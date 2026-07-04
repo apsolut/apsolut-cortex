@@ -48,6 +48,8 @@ export interface CompressSliceResult {
   duplicates_bumped: number;
   /** New cursor position (= end_msg_idx of the range that was compressed). */
   new_cursor: number;
+  /** True when compression failed (no provider) — cursor left unchanged. */
+  failed?: boolean;
 }
 
 /**
@@ -87,7 +89,17 @@ export async function compressSlice(args: CompressSliceArgs): Promise<CompressSl
     category: null,
   }));
 
-  const { memories } = await compressSession(observations, projectName);
+  const compression = await compressSession(observations, projectName);
+  if (!compression) {
+    return {
+      raw_persisted: transcript.length,
+      memories_stored: 0,
+      duplicates_bumped: 0,
+      new_cursor: cursor,
+      failed: true,
+    };
+  }
+  const { memories } = compression;
 
   // 4) Insert memories with the source range, dedup by embedding.
   let stored = 0;

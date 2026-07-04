@@ -85,10 +85,9 @@ async function main() {
       ? `${project.name} (files changed: ${changedFiles.join(", ")})`
       : project.name;
 
-    const { memories, summary } = await compressSession(
-      observations,
-      projectContext
-    );
+    const compression = await compressSession(observations, projectContext);
+    let compressionFailed = compression === null;
+    const { memories, summary } = compression ?? { memories: [], summary: "" };
 
     // Wrap memory storage + observation promotion + session update in a transaction
     const tx = await db.transaction("write");
@@ -132,7 +131,7 @@ async function main() {
         stored++;
       }
 
-      if (observations.length > 0) {
+      if (observations.length > 0 && !compressionFailed) {
         await markProjectObservationsPromoted(tx, project.id);
       }
 
@@ -170,6 +169,7 @@ async function main() {
           transcriptPath,
           source: "session-end",
         });
+        if (result.failed) compressionFailed = true;
         if (result.memories_stored > 0 || result.raw_persisted > 0) {
           console.error(
             `[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`
@@ -180,6 +180,10 @@ async function main() {
       } finally {
         if (got) releaseLock(sessionId);
       }
+    }
+
+    if (compressionFailed) {
+      console.log(JSON.stringify({ systemMessage: "apsolut-cortex: session compression failed (no provider available) — observations kept for next session. Set ANTHROPIC_API_KEY or run Ollama." }));
     }
 
     // ── M6 reflector: consolidate large sessions into denser memories ──

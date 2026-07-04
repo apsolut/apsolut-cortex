@@ -100,7 +100,11 @@ export async function maybeReflect(
     category: m.category,
   }));
 
-  const { memories: reflections } = await compressSession(observations, projectName);
+  const compression = await compressSession(observations, projectName);
+  if (!compression) {
+    return { source_memories: total, source_tokens: tokens, reflections_stored: 0, triggered: false };
+  }
+  const { memories: reflections } = compression;
 
   let stored = 0;
   for (const r of reflections) {

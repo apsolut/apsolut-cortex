@@ -7,7 +7,7 @@ const BREAKER_PATH = join(homedir(), ".apsolut-cortex", "compression-state.json"
 const MAX_FAILURES = 3;
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
-interface BreakerState { failures: number; lastFailure: number }
+export interface BreakerState { failures: number; lastFailure: number }
 
 function readBreaker(): BreakerState {
   try {
@@ -36,6 +36,10 @@ function recordFailure(): void {
 
 function resetBreaker(): void {
   writeBreaker({ failures: 0, lastFailure: 0 });
+}
+
+export function getBreakerState(): BreakerState {
+  return readBreaker();
 }
 
 export interface ExtractedMemory {
@@ -169,7 +173,7 @@ function parseResult(raw: string): CompressionResult {
 export async function compressSession(
   observations: Array<{ tool_name: string | null; content: string; category: string | null }>,
   project: string
-): Promise<CompressionResult> {
+): Promise<CompressionResult | null> {
   if (observations.length === 0) {
     return { memories: [], summary: "" };
   }
@@ -177,7 +181,7 @@ export async function compressSession(
   // Circuit breaker: skip if too many recent failures
   if (isBreakerOpen()) {
     console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
-    return { memories: [], summary: "" };
+    return null;
   }
 
   // Primary: Anthropic API
@@ -220,9 +224,9 @@ export async function compressSession(
     ].join("\n");
 
     console.error(msg);
-    // Return empty result — observations stay in DB as unprocessed (promoted=0)
+    // Observations stay in DB as unprocessed (promoted=0)
     // They'll be included in the next session's compression attempt
-    return { memories: [], summary: "" };
+    return null;
   }
 }
 

@@ -31,6 +31,7 @@ import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
 import { snapshot, listBackups, restore, reencryptToKey, BACKUP_DIR } from "./backup.js";
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 import { exportVault, OBSIDIAN_DIR } from "./export.js";
+import { getBreakerState } from "./compress.js";
 import {
   promoteMemory,
   demoteMemory,
@@ -374,6 +375,13 @@ async function status() {
         : r.summary;
       console.log(`  ${bl(`  ${age}d ago: ${summary}`)}`);
     });
+  }
+
+  const breaker = getBreakerState();
+  if (breaker.failures >= 1) {
+    const mins = Math.round((Date.now() - breaker.lastFailure) / 60000);
+    console.log(`  ├${hr}┤`);
+    console.log(`  ${bl(`compression: ${breaker.failures} recent failure${breaker.failures === 1 ? "" : "s"}, last ${mins}m ago`)}`);
   }
 
   console.log(`  ├${hr}┤`);
