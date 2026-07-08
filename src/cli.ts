@@ -5,6 +5,7 @@
  * Commands:
  *   init              — set up memory for this project
  *   status            — show memory stats
+ *   doctor            — diagnose hook/env problems (Windows Git Bash, etc.)
  *   uninstall         — remove hooks and MCP config
  *   hook:session-start
  *   hook:post-tool-use
@@ -32,6 +33,7 @@ import { snapshot, listBackups, restore, reencryptToKey, reencryptUnsupportedRea
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 import { exportVault, OBSIDIAN_DIR } from "./export.js";
 import { getBreakerState } from "./compress.js";
+import { diagnoseGitBash, gatherGitBashProbe, renderGitBashWarning } from "./gitbash.js";
 import {
   promoteMemory,
   demoteMemory,
@@ -84,6 +86,7 @@ switch (cmd) {
   case "hook:pre-compact":     await runHook("pre-compact"); break;
   case "hook:compress-worker": await runHook("compress-worker"); break;
   case "install-hooks":        await installHooksCmd(process.argv.slice(3)); break;
+  case "doctor":               doctor(); break;
   case "help": case "--help": case "-h":
   default:
     console.log(`
@@ -108,6 +111,7 @@ switch (cmd) {
   │    restore     Restore a snapshot                │
   │    db re-encrypt  Migrate DB to encrypted        │
   │    uninstall   Remove hooks & MCP config         │
+  │    doctor      Diagnose hook/env problems        │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
   │  DB:     ~/.apsolut-cortex/memory.db             │
@@ -313,6 +317,65 @@ async function init() {
 
 `;
   console.log(BANNER);
+
+  // Windows: hooks run through Git Bash. On a slim/MinGit install CC can't find
+  // bash and every hook silently no-ops. The failing hook can't report this, so
+  // surface it here at install time. Instruct only — never mutate global config.
+  const settingsEnv = (settings.env as Record<string, string> | undefined)?.CLAUDE_CODE_GIT_BASH_PATH;
+  const gitBashWarning = renderGitBashWarning(diagnoseGitBash(gatherGitBashProbe(settingsEnv)), y);
+  if (gitBashWarning) {
+    console.log(gitBashWarning.split("\n").map((l) => `  ${l}`).join("\n") + "\n");
+  }
+}
+
+// ── Doctor ──────────────────────────────────────────────────────────────────
+
+/**
+ * Diagnose problems that keep hooks from running. Focused on the Windows Git
+ * Bash issue for now: a broken hook can't self-report, so a CLI-side check is
+ * the only place to catch it.
+ */
+function doctor() {
+  const useColor = !process.env.NO_COLOR && process.env.TERM !== "dumb";
+  const y = (s: string) => (useColor ? `\x1b[33m${s}\x1b[0m` : s);
+  const g = (s: string) => (useColor ? `\x1b[32m${s}\x1b[0m` : s);
+
+  console.log(`\n[apsolut-cortex] doctor · v${PKG_VERSION}\n`);
+
+  let settingsEnv: string | undefined;
+  if (existsSync(CLAUDE_SETTINGS)) {
+    try {
+      const s = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8"));
+      settingsEnv = (s.env as Record<string, string> | undefined)?.CLAUDE_CODE_GIT_BASH_PATH;
+    } catch {}
+  }
+
+  const diag = diagnoseGitBash(gatherGitBashProbe(settingsEnv));
+
+  switch (diag.status) {
+    case "not-windows":
+      console.log(`${g("✓")} Git Bash check skipped (not Windows).`);
+      break;
+    case "ok":
+      console.log(`${g("✓")} Git Bash resolves — hooks can launch.`);
+      console.log(`    ${diag.path}`);
+      break;
+    case "already-set":
+      console.log(`${g("✓")} CLAUDE_CODE_GIT_BASH_PATH is set and exists.`);
+      console.log(`    ${diag.path}`);
+      break;
+    case "no-git":
+      console.log(`${y("?")} Couldn't locate git via PATH, so Git Bash can't be checked.`);
+      console.log(`    If hooks don't fire, set CLAUDE_CODE_GIT_BASH_PATH to a bash.exe`);
+      console.log(`    in ~/.claude/settings.json, then restart Claude Code.`);
+      break;
+    default: {
+      const warning = renderGitBashWarning(diag, y);
+      if (warning) console.log(warning);
+      process.exitCode = 1;
+    }
+  }
+  console.log("");
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────

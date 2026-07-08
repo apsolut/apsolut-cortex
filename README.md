@@ -54,6 +54,31 @@ apsolut-cortex init
 
 Restart Claude Code. Done.
 
+### Windows: hooks not firing?
+
+Claude Code runs command-type hooks through Git Bash. Its default detection
+looks for bash at `<git>\usr\bin\bash.exe`. On a slim / MinGit-style Git for
+Windows install only `<git>\bin\bash.exe` exists, so Claude Code can't launch
+bash and **every cortex hook silently no-ops** with a non-blocking error like:
+
+```
+PostToolUse:Read hook error
+Failed with non-blocking status code: Skipping command-line
+'"C:\Program Files\Git\bin\..\usr\bin\bash.exe"'  (not found)
+```
+
+Because it's non-blocking, memory capture, session-start, stop, etc. all quietly
+never run. Fix it by pointing Claude Code at the bash you do have — add to
+`~/.claude/settings.json`:
+
+```json
+{ "env": { "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe" } }
+```
+
+then restart Claude Code. Run `apsolut-cortex doctor` to detect this
+automatically and print the exact line (with the correct path) to paste; `init`
+also warns about it at install time.
+
 ### Dev setup (contributors)
 
 ```bash
@@ -138,6 +163,7 @@ Override host: `OLLAMA_HOST=http://localhost:11434`
 ```bash
 apsolut-cortex init             # set up memory for this project (legacy hook set)
 apsolut-cortex install-hooks    # opt in to M6 hooks (PreCompact + token-budget worker)
+apsolut-cortex doctor           # diagnose why hooks aren't firing (Windows Git Bash, etc.)
 apsolut-cortex uninstall        # remove hooks and MCP config (DB kept)
 ```
 

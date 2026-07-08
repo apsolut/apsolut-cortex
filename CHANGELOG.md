@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.9] – 2026-07-09
+
+### Added
+- **`apsolut-cortex doctor`** — diagnoses why hooks aren't firing. First check targets the Windows Git Bash issue below: a broken hook can't report itself, so a CLI-side check is the only place to catch it. Prints the exact `~/.claude/settings.json` line (with the correct, verified path) to paste. Detection lives in `src/gitbash.ts` as a pure function over an injectable file-existence probe, unit-tested against both git layouts (slim and full) since the failure can't be reproduced on a machine with full Git.
+
+### Fixed
+- **Windows: hooks silently no-op on slim/MinGit Git installs.** Claude Code runs command-type hooks through Git Bash, resolving it by default as `<git>\usr\bin\bash.exe`. On a slim / MinGit-style install only `<git>\bin\bash.exe` exists, so Claude Code can't launch bash and every cortex hook (SessionStart, PostToolUse, Stop, SessionEnd, …) fails with a *non-blocking* error — memory capture, session-start, etc. all quietly stop working with no obvious failure. Not a bug in cortex's own code, but cortex is what breaks. `init` now detects the slim layout at install time and prints the remedy (set `CLAUDE_CODE_GIT_BASH_PATH`); `doctor` detects it on demand. Instruct-only by design — neither command mutates the user's global `settings.json` `env` block. README gains a "Windows: hooks not firing?" troubleshooting section.
+
 ## [0.12.8] – 2026-07-04
 
 Fixes from the 2026-07-03 pre-release deep review (P1 batch).

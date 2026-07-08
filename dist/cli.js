@@ -2,7 +2,7 @@
 
 // src/cli.ts
 import {
-  existsSync as existsSync7,
+  existsSync as existsSync8,
   mkdirSync as mkdirSync6,
   readFileSync as readFileSync4,
   rmSync,
@@ -1147,6 +1147,87 @@ function getBreakerState() {
   return readBreaker();
 }
 
+// src/gitbash.ts
+import { execFileSync } from "child_process";
+import { existsSync as existsSync7 } from "fs";
+import { win32 as winPath } from "path";
+function diagnoseGitBash(probe) {
+  if (!probe.isWindows)
+    return { status: "not-windows" };
+  const configured = probe.envPath ?? probe.settingsPath;
+  if (configured) {
+    return probe.exists(configured) ? { status: "already-set", path: configured } : { status: "already-set-missing", path: configured };
+  }
+  if (!probe.gitRoot)
+    return { status: "no-git" };
+  const usrBin = winPath.join(probe.gitRoot, "usr", "bin", "bash.exe");
+  const bin = winPath.join(probe.gitRoot, "bin", "bash.exe");
+  if (probe.exists(usrBin))
+    return { status: "ok", path: usrBin };
+  if (probe.exists(bin))
+    return { status: "slim", recommended: bin };
+  return { status: "no-bash", gitRoot: probe.gitRoot };
+}
+function findGitRoot() {
+  try {
+    const out = execFileSync("where", ["git"], { encoding: "utf-8" });
+    const first = out.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    if (!first)
+      return;
+    return winPath.dirname(winPath.dirname(first));
+  } catch {
+    return;
+  }
+}
+function gatherGitBashProbe(settingsEnvPath) {
+  const isWindows = process.platform === "win32";
+  return {
+    isWindows,
+    envPath: process.env.CLAUDE_CODE_GIT_BASH_PATH,
+    settingsPath: settingsEnvPath,
+    gitRoot: isWindows ? findGitRoot() : undefined,
+    exists: existsSync7
+  };
+}
+function renderGitBashWarning(diag, paint = (s) => s) {
+  const line = (env2) => `    "env": { "CLAUDE_CODE_GIT_BASH_PATH": ${JSON.stringify(env2)} }`;
+  switch (diag.status) {
+    case "slim":
+      return [
+        paint("⚠ Windows: Claude Code can't launch your hooks."),
+        "  Your Git install lacks usr\\bin\\bash.exe (slim/MinGit layout),",
+        "  so hooks silently never run. Add this to ~/.claude/settings.json:",
+        "",
+        line(diag.recommended),
+        "",
+        "  Then restart Claude Code."
+      ].join(`
+`);
+    case "no-bash":
+      return [
+        paint("⚠ Windows: no bash.exe found under your Git install."),
+        `  Looked under ${diag.gitRoot} but found neither usr\\bin\\bash.exe`,
+        "  nor bin\\bash.exe. Claude Code can't launch hooks without Git Bash.",
+        "  Install full Git for Windows, or point at a bash.exe you have:",
+        "",
+        line("C:\\path\\to\\bash.exe"),
+        "",
+        "  Then restart Claude Code."
+      ].join(`
+`);
+    case "already-set-missing":
+      return [
+        paint("⚠ Windows: CLAUDE_CODE_GIT_BASH_PATH points at a missing file."),
+        `  ${diag.path}`,
+        "  Claude Code can't launch hooks. Fix the path in your environment or",
+        "  ~/.claude/settings.json, then restart Claude Code."
+      ].join(`
+`);
+    default:
+      return null;
+  }
+}
+
 // src/curation.ts
 var TRUST_ORDER = ["observed", "validated", "proven", "canonical"];
 async function changeTrust(db, id, direction) {
@@ -1341,6 +1422,9 @@ switch (cmd) {
   case "install-hooks":
     await installHooksCmd(process.argv.slice(3));
     break;
+  case "doctor":
+    doctor();
+    break;
   case "help":
   case "--help":
   case "-h":
@@ -1367,6 +1451,7 @@ switch (cmd) {
   │    restore     Restore a snapshot                │
   │    db re-encrypt  Migrate DB to encrypted        │
   │    uninstall   Remove hooks & MCP config         │
+  │    doctor      Diagnose hook/env problems        │
   │    help        Show this help                    │
   ├──────────────────────────────────────────────────┤
   │  DB:     ~/.apsolut-cortex/memory.db             │
@@ -1376,7 +1461,7 @@ switch (cmd) {
 }
 async function runHook(name) {
   const hookPath = IS_DIST ? join6(PACKAGE_ROOT, "scripts", `${name}.js`) : join6(__dirname2, "hooks", `${name}.ts`);
-  if (!existsSync7(hookPath)) {
+  if (!existsSync8(hookPath)) {
     process.stderr.write(`[apsolut-cortex] hook not found: ${hookPath}
 `);
     process.exit(0);
@@ -1387,12 +1472,12 @@ async function init() {
   console.log(`
 [apsolut-cortex] init
 `);
-  if (!existsSync7(PROJECT_APSOLUT)) {
+  if (!existsSync8(PROJECT_APSOLUT)) {
     mkdirSync6(PROJECT_APSOLUT, { recursive: true });
   }
   let projectId;
   let projectName;
-  if (existsSync7(PROJECT_CONFIG)) {
+  if (existsSync8(PROJECT_CONFIG)) {
     const existing = JSON.parse(readFileSync4(PROJECT_CONFIG, "utf-8"));
     projectId = existing.id;
     projectName = existing.name;
@@ -1415,7 +1500,7 @@ async function init() {
   const mcpCommand = IS_DIST ? "node" : "bun";
   const mcpArgs = [mcpServerPath];
   let mcp = {};
-  if (existsSync7(MCP_JSON)) {
+  if (existsSync8(MCP_JSON)) {
     try {
       mcp = JSON.parse(readFileSync4(MCP_JSON, "utf-8"));
     } catch {}
@@ -1438,9 +1523,9 @@ async function init() {
   };
   let settings = {};
   const settingsDir = dirname3(CLAUDE_SETTINGS);
-  if (!existsSync7(settingsDir))
+  if (!existsSync8(settingsDir))
     mkdirSync6(settingsDir, { recursive: true });
-  if (existsSync7(CLAUDE_SETTINGS)) {
+  if (existsSync8(CLAUDE_SETTINGS)) {
     try {
       settings = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
     } catch {}
@@ -1468,12 +1553,12 @@ async function init() {
   const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget"];
   const skillsSource = join6(PACKAGE_ROOT, "skills");
   const skillsTarget = join6(homedir4(), ".claude", "skills");
-  if (!existsSync7(skillsTarget))
+  if (!existsSync8(skillsTarget))
     mkdirSync6(skillsTarget, { recursive: true });
   const OLD_SKILL_NAMES = ["remember", "store", "status", "forget"];
   for (const old of OLD_SKILL_NAMES) {
     const oldSkill = join6(skillsTarget, old, "SKILL.md");
-    if (existsSync7(oldSkill)) {
+    if (existsSync8(oldSkill)) {
       const content = readFileSync4(oldSkill, "utf-8");
       if (content.includes("memory_")) {
         rmSync(join6(skillsTarget, old), { recursive: true, force: true });
@@ -1485,19 +1570,19 @@ async function init() {
     const src = join6(skillsSource, name, "SKILL.md");
     const destDir = join6(skillsTarget, name);
     const dest = join6(destDir, "SKILL.md");
-    if (!existsSync7(src))
+    if (!existsSync8(src))
       continue;
     const srcContent = readFileSync4(src, "utf-8");
-    if (existsSync7(dest) && readFileSync4(dest, "utf-8") === srcContent)
+    if (existsSync8(dest) && readFileSync4(dest, "utf-8") === srcContent)
       continue;
-    if (!existsSync7(destDir))
+    if (!existsSync8(destDir))
       mkdirSync6(destDir, { recursive: true });
     writeFileSync4(dest, srcContent);
     skillsCopied++;
   }
   console.log(skillsCopied > 0 ? `[apsolut-cortex] ✓ Copied ${skillsCopied} skills to ~/.claude/skills/ (/${SKILL_NAMES.join(", /")})` : `[apsolut-cortex] ✓ Skills already installed`);
   const gitignore = join6(PROJECT_ROOT, ".gitignore");
-  if (existsSync7(gitignore)) {
+  if (existsSync8(gitignore)) {
     const content = readFileSync4(gitignore, "utf-8");
     if (!content.includes(".apsolut-cortex/")) {
       writeFileSync4(gitignore, content + `
@@ -1538,9 +1623,58 @@ async function init() {
 
 `;
   console.log(BANNER);
+  const settingsEnv = settings.env?.CLAUDE_CODE_GIT_BASH_PATH;
+  const gitBashWarning = renderGitBashWarning(diagnoseGitBash(gatherGitBashProbe(settingsEnv)), y);
+  if (gitBashWarning) {
+    console.log(gitBashWarning.split(`
+`).map((l) => `  ${l}`).join(`
+`) + `
+`);
+  }
+}
+function doctor() {
+  const useColor = !process.env.NO_COLOR && process.env.TERM !== "dumb";
+  const y = (s) => useColor ? `\x1B[33m${s}\x1B[0m` : s;
+  const g = (s) => useColor ? `\x1B[32m${s}\x1B[0m` : s;
+  console.log(`
+[apsolut-cortex] doctor · v${PKG_VERSION}
+`);
+  let settingsEnv;
+  if (existsSync8(CLAUDE_SETTINGS)) {
+    try {
+      const s = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
+      settingsEnv = s.env?.CLAUDE_CODE_GIT_BASH_PATH;
+    } catch {}
+  }
+  const diag = diagnoseGitBash(gatherGitBashProbe(settingsEnv));
+  switch (diag.status) {
+    case "not-windows":
+      console.log(`${g("✓")} Git Bash check skipped (not Windows).`);
+      break;
+    case "ok":
+      console.log(`${g("✓")} Git Bash resolves — hooks can launch.`);
+      console.log(`    ${diag.path}`);
+      break;
+    case "already-set":
+      console.log(`${g("✓")} CLAUDE_CODE_GIT_BASH_PATH is set and exists.`);
+      console.log(`    ${diag.path}`);
+      break;
+    case "no-git":
+      console.log(`${y("?")} Couldn't locate git via PATH, so Git Bash can't be checked.`);
+      console.log(`    If hooks don't fire, set CLAUDE_CODE_GIT_BASH_PATH to a bash.exe`);
+      console.log(`    in ~/.claude/settings.json, then restart Claude Code.`);
+      break;
+    default: {
+      const warning = renderGitBashWarning(diag, y);
+      if (warning)
+        console.log(warning);
+      process.exitCode = 1;
+    }
+  }
+  console.log("");
 }
 async function status() {
-  if (!existsSync7(PROJECT_CONFIG)) {
+  if (!existsSync8(PROJECT_CONFIG)) {
     console.log("[apsolut-cortex] No project found. Run: apsolut-cortex init");
     process.exit(1);
   }
@@ -1727,7 +1861,7 @@ async function grepCmd(args) {
     console.log("[apsolut-cortex] usage: apsolut-cortex grep <pattern>");
     return;
   }
-  if (!existsSync7(PROJECT_CONFIG)) {
+  if (!existsSync8(PROJECT_CONFIG)) {
     console.log("[apsolut-cortex] No project here. Run: apsolut-cortex init");
     process.exitCode = 1;
     return;
@@ -1799,7 +1933,7 @@ async function deleteCmd(args) {
 }
 async function installHooksCmd(args) {
   const template = join6(PACKAGE_ROOT, "templates", "hooks-m6.json");
-  if (!existsSync7(template)) {
+  if (!existsSync8(template)) {
     console.log(`[apsolut-cortex] template missing: ${template}`);
     process.exitCode = 1;
     return;
@@ -1814,9 +1948,9 @@ async function installHooksCmd(args) {
   }
   let settings = {};
   const settingsDir = dirname3(CLAUDE_SETTINGS);
-  if (!existsSync7(settingsDir))
+  if (!existsSync8(settingsDir))
     mkdirSync6(settingsDir, { recursive: true });
-  if (existsSync7(CLAUDE_SETTINGS)) {
+  if (existsSync8(CLAUDE_SETTINGS)) {
     try {
       settings = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
     } catch {}
@@ -1995,7 +2129,7 @@ async function evalCmd(subcommand) {
   }
 }
 function uninstall() {
-  if (existsSync7(MCP_JSON)) {
+  if (existsSync8(MCP_JSON)) {
     try {
       const mcp = JSON.parse(readFileSync4(MCP_JSON, "utf-8"));
       if (mcp.mcpServers?.["apsolut-cortex"]) {
@@ -2005,7 +2139,7 @@ function uninstall() {
       }
     } catch {}
   }
-  if (existsSync7(CLAUDE_SETTINGS)) {
+  if (existsSync8(CLAUDE_SETTINGS)) {
     try {
       const settings = JSON.parse(readFileSync4(CLAUDE_SETTINGS, "utf-8"));
       const hooks = settings.hooks;
@@ -2032,7 +2166,7 @@ function uninstall() {
   let skillsRemoved = 0;
   for (const name of SKILL_NAMES) {
     const skillFile = join6(skillsDir, name, "SKILL.md");
-    if (existsSync7(skillFile)) {
+    if (existsSync8(skillFile)) {
       const content = readFileSync4(skillFile, "utf-8");
       if (content.includes("memory_")) {
         rmSync(join6(skillsDir, name), { recursive: true, force: true });
