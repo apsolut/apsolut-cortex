@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.12.9] – 2026-07-09
+## [0.12.10] – 2026-07-09
 
 ### Added
 - **`apsolut-cortex doctor`** — diagnoses why hooks aren't firing. First check targets the Windows Git Bash issue below: a broken hook can't report itself, so a CLI-side check is the only place to catch it. Prints the exact `~/.claude/settings.json` line (with the correct, verified path) to paste. Detection lives in `src/gitbash.ts` as a pure function over an injectable file-existence probe, unit-tested against both git layouts (slim and full) since the failure can't be reproduced on a machine with full Git.
@@ -238,8 +238,8 @@ Fixes from the 2026-07-03 pre-release deep review (P1 batch).
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.9...HEAD
-[0.12.9]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.8...v0.12.9
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.10...HEAD
+[0.12.10]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.8...v0.12.10
 [0.12.8]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.6...v0.12.8
 [0.12.6]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.4...v0.12.5
