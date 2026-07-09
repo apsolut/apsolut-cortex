@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`apsolut-cortex doctor`** — diagnoses why hooks aren't firing. First check targets the Windows Git Bash issue below: a broken hook can't report itself, so a CLI-side check is the only place to catch it. Prints the exact `~/.claude/settings.json` line (with the correct, verified path) to paste. Detection lives in `src/gitbash.ts` as a pure function over an injectable file-existence probe, unit-tested against both git layouts (slim and full) since the failure can't be reproduced on a machine with full Git.
 
 ### Fixed
+- **Keyring native dependency can no longer crash the whole tool.** `@napi-rs/keyring`'s loader requires a platform `.node` binding at import and *throws* if it can't load — a missing `libsecret-1.so.0` on minimal Linux/containers, an arch outside its prebuild matrix, or the npm optional-dependencies bug (npm/cli#4828). Because `db.ts` statically imported the keyring, that throw propagated during module evaluation and crashed **every hook, the MCP server, and the CLI (including `doctor`) at startup** — on the exact platforms where it bites, before any `try/catch` could run. This defeated the intended plaintext fallback. The binding now loads through a guarded `createRequire`, so an unavailable backend degrades to "unencrypted" (the opt-in default) instead of taking the process down. `setDbKey` still fails loud when a user explicitly enables encryption on a backend-less install; a genuinely encrypted DB still fails safe with `SQLITE_NOTADB` rather than being silently overwritten. Encryption remains experimental/opt-in and is treated as a dormant future feature on all platforms for now.
 - **Windows: hooks silently no-op on slim/MinGit Git installs.** Claude Code runs command-type hooks through Git Bash, resolving it by default as `<git>\usr\bin\bash.exe`. On a slim / MinGit-style install only `<git>\bin\bash.exe` exists, so Claude Code can't launch bash and every cortex hook (SessionStart, PostToolUse, Stop, SessionEnd, …) fails with a *non-blocking* error — memory capture, session-start, etc. all quietly stop working with no obvious failure. Not a bug in cortex's own code, but cortex is what breaks. `init` now detects the slim layout at install time and prints the remedy (set `CLAUDE_CODE_GIT_BASH_PATH`); `doctor` detects it on demand. Instruct-only by design — neither command mutates the user's global `settings.json` `env` block. README gains a "Windows: hooks not firing?" troubleshooting section.
 
 ## [0.12.8] – 2026-07-04
@@ -237,7 +238,9 @@ Fixes from the 2026-07-03 pre-release deep review (P1 batch).
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.6...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.9...HEAD
+[0.12.9]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.8...v0.12.9
+[0.12.8]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.6...v0.12.8
 [0.12.6]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.3...v0.12.4

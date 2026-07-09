@@ -10,6 +10,8 @@ import {
   setDbKey,
   deleteDbKey,
   generateDbKey,
+  keyringAvailable,
+  __setEntryCtorForTest,
 } from "./keyring.js";
 
 const TEST_SERVICE = `apsolut-cortex-test-${process.pid}-${Date.now()}`;
@@ -55,5 +57,31 @@ describe("keychain round-trip", () => {
     expect(getDbKey(TEST_SERVICE, TEST_ACCOUNT)).toBe("temp");
     deleteDbKey(TEST_SERVICE, TEST_ACCOUNT);
     expect(getDbKey(TEST_SERVICE, TEST_ACCOUNT)).toBeNull();
+  });
+});
+
+describe("keychain backend unavailable", () => {
+  // Simulate a platform/install where the native binding failed to load
+  // (missing libsecret, npm optional-deps bug, uncovered arch). The tool must
+  // degrade to "unencrypted" rather than crash — this is the guard that keeps
+  // every hook, the MCP server, and the CLI alive on such machines.
+  let restore: ReturnType<typeof __setEntryCtorForTest>;
+  beforeAll(() => { restore = __setEntryCtorForTest(null); });
+  afterAll(() => { __setEntryCtorForTest(restore); });
+
+  test("keyringAvailable() reflects the missing backend", () => {
+    expect(keyringAvailable()).toBe(false);
+  });
+
+  test("getDbKey returns null instead of throwing", () => {
+    expect(getDbKey(TEST_SERVICE, TEST_ACCOUNT)).toBeNull();
+  });
+
+  test("deleteDbKey returns false instead of throwing", () => {
+    expect(deleteDbKey(TEST_SERVICE, TEST_ACCOUNT)).toBe(false);
+  });
+
+  test("setDbKey fails loud — encryption can't be silently no-op'd", () => {
+    expect(() => setDbKey("x", TEST_SERVICE, TEST_ACCOUNT)).toThrow(/unavailable/i);
   });
 });

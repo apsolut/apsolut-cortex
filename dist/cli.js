@@ -296,12 +296,22 @@ async function releaseLock(client) {
 }
 
 // src/keyring.ts
-import { Entry } from "@napi-rs/keyring";
+import { createRequire } from "module";
 import { randomBytes } from "crypto";
 var KEYRING_SERVICE = "apsolut-cortex";
 var KEYRING_ACCOUNT_DB_KEY = "db-encryption-key";
+var _EntryCtor = null;
+var _loadError = null;
+try {
+  const require2 = createRequire(import.meta.url);
+  _EntryCtor = require2("@napi-rs/keyring").Entry;
+} catch (e) {
+  _loadError = e;
+}
 function getDbKey(service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
-  const entry = new Entry(service, account);
+  if (!_EntryCtor)
+    return null;
+  const entry = new _EntryCtor(service, account);
   try {
     return entry.getPassword();
   } catch (e) {
@@ -313,7 +323,10 @@ function getDbKey(service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
   }
 }
 function setDbKey(key, service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
-  const entry = new Entry(service, account);
+  if (!_EntryCtor) {
+    throw new Error(`[apsolut-cortex] OS keychain backend is unavailable on this platform/install, ` + `so encryption can't be enabled. (${_loadError ?? "no backend loaded"})`);
+  }
+  const entry = new _EntryCtor(service, account);
   entry.setPassword(key);
 }
 function generateDbKey() {
