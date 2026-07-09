@@ -298,28 +298,36 @@ useful. Canonical memories never decay.
 
 ### Windows: hooks not firing?
 
-Claude Code runs command-type hooks through Git Bash. Its default detection
-looks for bash at `<git>\usr\bin\bash.exe`. On a slim / MinGit-style Git for
-Windows install only `<git>\bin\bash.exe` exists, so Claude Code can't launch
-bash and **every cortex hook silently no-ops** with a non-blocking error like:
+Claude Code runs **all** command-type hooks through **Git Bash** on Windows —
+not cmd, not PowerShell, not WSL. It resolves the real bash at
+`<git>\usr\bin\bash.exe`. If that binary is missing, every hook (from cortex or
+any other tool) fails with a non-blocking error like:
 
 ```
-PostToolUse:Read hook error
+SessionStart:startup hook error
 Failed with non-blocking status code: Skipping command-line
 '"C:\Program Files\Git\bin\..\usr\bin\bash.exe"'  (not found)
 ```
 
-Because it's non-blocking, memory capture, session-start, stop, etc. all quietly
-never run. Fix it by pointing Claude Code at the bash you do have — add to
-`~/.claude/settings.json`:
+The usual cause is a **partial / MinGit** Git for Windows install (the `usr\`
+tree stripped out — common when another tool's installer overwrites your Git).
+The `<git>\bin\bash.exe` stub still exists but is only a wrapper to that missing
+binary, so **pointing `CLAUDE_CODE_GIT_BASH_PATH` at it does not help.**
 
-```json
-{ "env": { "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe" } }
+**Fix — install the full Git for Windows:**
+
+```
+winget install --id Git.Git -e --source winget
 ```
 
-then restart Claude Code. Run `apsolut-cortex doctor` to detect this
-automatically and print the exact line (with your correct path) to paste; `init`
-also warns about it at install time.
+(or download it from <https://git-scm.com/download/win>), then fully quit and
+relaunch Claude Code. That restores `usr\bin\bash.exe` and hooks work with no
+extra config. If you have a real bash in a non-standard location, set
+`CLAUDE_CODE_GIT_BASH_PATH` to that `bash.exe` instead.
+
+Run `apsolut-cortex doctor` to diagnose it — it **actually runs** your resolved
+bash (not just a file check), so it catches broken wrappers and prints the exact
+remedy; `init` warns at install time too.
 
 ---
 

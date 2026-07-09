@@ -1164,22 +1164,21 @@ function getBreakerState() {
 import { execFileSync } from "child_process";
 import { existsSync as existsSync7 } from "fs";
 import { win32 as winPath } from "path";
+var FULL_GIT_URL = "https://git-scm.com/download/win";
+var FULL_GIT_WINGET = "winget install --id Git.Git -e --source winget";
+function realBashPath(gitRoot) {
+  return winPath.join(gitRoot, "usr", "bin", "bash.exe");
+}
 function diagnoseGitBash(probe) {
   if (!probe.isWindows)
     return { status: "not-windows" };
   const configured = probe.envPath ?? probe.settingsPath;
   if (configured) {
-    return probe.exists(configured) ? { status: "already-set", path: configured } : { status: "already-set-missing", path: configured };
+    return probe.exists(configured) ? { status: "configured", path: configured } : { status: "configured-missing", path: configured };
   }
   if (!probe.gitRoot)
     return { status: "no-git" };
-  const usrBin = winPath.join(probe.gitRoot, "usr", "bin", "bash.exe");
-  const bin = winPath.join(probe.gitRoot, "bin", "bash.exe");
-  if (probe.exists(usrBin))
-    return { status: "ok", path: usrBin };
-  if (probe.exists(bin))
-    return { status: "slim", recommended: bin };
-  return { status: "no-bash", gitRoot: probe.gitRoot };
+  return probe.exists(realBashPath(probe.gitRoot)) ? { status: "ok", path: realBashPath(probe.gitRoot) } : { status: "partial-git", gitRoot: probe.gitRoot };
 }
 function findGitRoot() {
   try {
@@ -1190,6 +1189,14 @@ function findGitRoot() {
     return winPath.dirname(winPath.dirname(first));
   } catch {
     return;
+  }
+}
+function bashRuns(bashPath) {
+  try {
+    execFileSync(bashPath, ["-c", "exit 0"], { stdio: "ignore", timeout: 1e4 });
+    return true;
+  } catch {
+    return false;
   }
 }
 function gatherGitBashProbe(settingsEnvPath) {
@@ -1203,37 +1210,29 @@ function gatherGitBashProbe(settingsEnvPath) {
   };
 }
 function renderGitBashWarning(diag, paint = (s) => s) {
-  const line = (env2) => `    "env": { "CLAUDE_CODE_GIT_BASH_PATH": ${JSON.stringify(env2)} }`;
+  const installFullGit = [
+    "  Claude Code needs a working Git Bash to run hooks. Install the full",
+    `  Git for Windows — ${FULL_GIT_URL}`,
+    `  or:  ${FULL_GIT_WINGET}`,
+    "  then fully quit and relaunch Claude Code. (If you already have a real",
+    "  bash elsewhere, set CLAUDE_CODE_GIT_BASH_PATH to that bash.exe instead.)"
+  ];
   switch (diag.status) {
-    case "slim":
+    case "partial-git":
       return [
-        paint("⚠ Windows: Claude Code can't launch your hooks."),
-        "  Your Git install lacks usr\\bin\\bash.exe (slim/MinGit layout),",
-        "  so hooks silently never run. Add this to ~/.claude/settings.json:",
-        "",
-        line(diag.recommended),
-        "",
-        "  Then restart Claude Code."
+        paint("⚠ Windows: your Git install has no bash — hooks can't run."),
+        `  ${realBashPath(diag.gitRoot)} is missing`,
+        "  (a partial / MinGit install: the bin\\bash.exe stub is only a wrapper",
+        "  to that missing binary, so pointing at it does not help).",
+        ...installFullGit
       ].join(`
 `);
-    case "no-bash":
-      return [
-        paint("⚠ Windows: no bash.exe found under your Git install."),
-        `  Looked under ${diag.gitRoot} but found neither usr\\bin\\bash.exe`,
-        "  nor bin\\bash.exe. Claude Code can't launch hooks without Git Bash.",
-        "  Install full Git for Windows, or point at a bash.exe you have:",
-        "",
-        line("C:\\path\\to\\bash.exe"),
-        "",
-        "  Then restart Claude Code."
-      ].join(`
-`);
-    case "already-set-missing":
+    case "configured-missing":
       return [
         paint("⚠ Windows: CLAUDE_CODE_GIT_BASH_PATH points at a missing file."),
         `  ${diag.path}`,
-        "  Claude Code can't launch hooks. Fix the path in your environment or",
-        "  ~/.claude/settings.json, then restart Claude Code."
+        "  Claude Code can't launch hooks. Fix the path (or unset it) in your",
+        "  environment or ~/.claude/settings.json, then relaunch Claude Code."
       ].join(`
 `);
     default:
@@ -1660,22 +1659,40 @@ function doctor() {
     } catch {}
   }
   const diag = diagnoseGitBash(gatherGitBashProbe(settingsEnv));
+  const brokenBash = (label, path) => {
+    console.log(`${y("⚠")} ${label} exists but won't run — hooks can't launch.`);
+    console.log(`    ${path}`);
+    console.log(`    Your Git is a partial/MinGit install with no real bash.`);
+    console.log(`    Install the full Git for Windows:`);
+    console.log(`      ${FULL_GIT_URL}`);
+    console.log(`      or:  ${FULL_GIT_WINGET}`);
+    console.log(`    then fully quit and relaunch Claude Code.`);
+    process.exitCode = 1;
+  };
   switch (diag.status) {
     case "not-windows":
       console.log(`${g("✓")} Git Bash check skipped (not Windows).`);
       break;
     case "ok":
-      console.log(`${g("✓")} Git Bash resolves — hooks can launch.`);
-      console.log(`    ${diag.path}`);
+      if (bashRuns(diag.path)) {
+        console.log(`${g("✓")} Git Bash resolves and runs — hooks can launch.`);
+        console.log(`    ${diag.path}`);
+      } else {
+        brokenBash("Git Bash", diag.path);
+      }
       break;
-    case "already-set":
-      console.log(`${g("✓")} CLAUDE_CODE_GIT_BASH_PATH is set and exists.`);
-      console.log(`    ${diag.path}`);
+    case "configured":
+      if (bashRuns(diag.path)) {
+        console.log(`${g("✓")} CLAUDE_CODE_GIT_BASH_PATH is set and runs.`);
+        console.log(`    ${diag.path}`);
+      } else {
+        brokenBash("CLAUDE_CODE_GIT_BASH_PATH", diag.path);
+      }
       break;
     case "no-git":
       console.log(`${y("?")} Couldn't locate git via PATH, so Git Bash can't be checked.`);
-      console.log(`    If hooks don't fire, set CLAUDE_CODE_GIT_BASH_PATH to a bash.exe`);
-      console.log(`    in ~/.claude/settings.json, then restart Claude Code.`);
+      console.log(`    If hooks don't fire, install the full Git for Windows or set`);
+      console.log(`    CLAUDE_CODE_GIT_BASH_PATH to a real bash.exe, then relaunch Claude Code.`);
       break;
     default: {
       const warning = renderGitBashWarning(diag, y);

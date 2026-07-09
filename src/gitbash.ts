@@ -2,27 +2,35 @@
  * Git Bash detection for Windows.
  *
  * Claude Code runs command-type hooks through Git Bash. Its default detection
- * resolves bash relative to git as `<gitroot>\usr\bin\bash.exe`. On a slim /
- * MinGit-style install only `<gitroot>\bin\bash.exe` exists, so CC can't launch
- * bash and every hook silently no-ops with a non-blocking error. The remedy is
- * to point `CLAUDE_CODE_GIT_BASH_PATH` at a bash.exe that actually exists.
+ * resolves bash relative to git as `<gitroot>\usr\bin\bash.exe` — the REAL
+ * bash binary. The stubs in `<gitroot>\bin\bash.exe` are ~47 KB wrapper
+ * executables that merely re-exec `..\usr\bin\bash.exe`; on a partial / MinGit
+ * install (usr\ tree stripped out) they exist but fail identically with
+ * "Skipping command-line '...\usr\bin\bash.exe' (not found)". So `usr\bin\
+ * bash.exe` is the single source of truth: if it's absent there is no usable
+ * bash, and pointing `CLAUDE_CODE_GIT_BASH_PATH` at the `bin\` wrapper does
+ * NOT help. The remedy is a full Git for Windows (or a real bash elsewhere).
  *
- * The hook that would report this can't itself launch, so detection lives here
- * in the CLI (`init` prints it proactively, `doctor` on demand). The core is a
- * pure function so both git layouts can be unit-tested without a real install.
+ * The hook that would report this can't itself launch, so detection lives in
+ * the CLI (`init` prints it proactively, `doctor` on demand). The layout core
+ * is a pure function so both git layouts can be unit-tested without a real
+ * install; `doctor` additionally *runs* the resolved bash to catch broken
+ * wrappers that a file-existence check would miss.
  */
 
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 import { win32 as winPath } from "path";
 
+export const FULL_GIT_URL = "https://git-scm.com/download/win";
+export const FULL_GIT_WINGET = "winget install --id Git.Git -e --source winget";
+
 export type GitBashDiagnosis =
   | { status: "not-windows" }
-  | { status: "already-set"; path: string }
-  | { status: "already-set-missing"; path: string }
+  | { status: "configured"; path: string }
+  | { status: "configured-missing"; path: string }
   | { status: "ok"; path: string }
-  | { status: "slim"; recommended: string }
-  | { status: "no-bash"; gitRoot: string }
+  | { status: "partial-git"; gitRoot: string }
   | { status: "no-git" };
 
 export interface GitBashProbe {
@@ -38,33 +46,33 @@ export interface GitBashProbe {
   exists: (p: string) => boolean;
 }
 
+/** The real bash binary for a Git for Windows root (the only one that works). */
+export function realBashPath(gitRoot: string): string {
+  return winPath.join(gitRoot, "usr", "bin", "bash.exe");
+}
+
 /**
- * Pure diagnosis. Given a fully-resolved probe, decide what (if anything) is
- * wrong with Git Bash resolution. No I/O beyond the injected `exists`.
+ * Pure diagnosis over file layout. No I/O beyond the injected `exists`. When a
+ * `CLAUDE_CODE_GIT_BASH_PATH` override is set we only check that it exists here;
+ * `doctor` runs it to confirm it actually launches.
  */
 export function diagnoseGitBash(probe: GitBashProbe): GitBashDiagnosis {
   if (!probe.isWindows) return { status: "not-windows" };
 
-  // An explicit override wins — but only if it actually points at a real file.
   const configured = probe.envPath ?? probe.settingsPath;
   if (configured) {
     return probe.exists(configured)
-      ? { status: "already-set", path: configured }
-      : { status: "already-set-missing", path: configured };
+      ? { status: "configured", path: configured }
+      : { status: "configured-missing", path: configured };
   }
 
   if (!probe.gitRoot) return { status: "no-git" };
 
-  const usrBin = winPath.join(probe.gitRoot, "usr", "bin", "bash.exe");
-  const bin = winPath.join(probe.gitRoot, "bin", "bash.exe");
-
-  // usr\bin\bash.exe is what CC's default resolution expects — if it's there,
-  // hooks launch fine.
-  if (probe.exists(usrBin)) return { status: "ok", path: usrBin };
-  // Slim layout: only bin\bash.exe exists. It works on full installs too, so
-  // it's a safe universal recommendation.
-  if (probe.exists(bin)) return { status: "slim", recommended: bin };
-  return { status: "no-bash", gitRoot: probe.gitRoot };
+  // Only usr\bin\bash.exe is a real bash. bin\bash.exe is a wrapper to it and
+  // is worthless when it's absent, so we never recommend the wrapper.
+  return probe.exists(realBashPath(probe.gitRoot))
+    ? { status: "ok", path: realBashPath(probe.gitRoot) }
+    : { status: "partial-git", gitRoot: probe.gitRoot };
 }
 
 /**
@@ -84,6 +92,21 @@ export function findGitRoot(): string | undefined {
     return winPath.dirname(winPath.dirname(first));
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Actually launch a bash and confirm it runs. This is the reliable check: a
+ * broken wrapper (partial Git) exists on disk but fails to exec, which a
+ * file-existence probe can't tell apart from a working bash. Returns false on
+ * any failure (missing, non-zero exit, wrapper error).
+ */
+export function bashRuns(bashPath: string): boolean {
+  try {
+    execFileSync(bashPath, ["-c", "exit 0"], { stdio: "ignore", timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -111,43 +134,35 @@ export function renderGitBashWarning(
   diag: GitBashDiagnosis,
   paint: (s: string) => string = (s) => s,
 ): string | null {
-  const line = (env: string) =>
-    `    "env": { "CLAUDE_CODE_GIT_BASH_PATH": ${JSON.stringify(env)} }`;
+  const installFullGit = [
+    "  Claude Code needs a working Git Bash to run hooks. Install the full",
+    `  Git for Windows — ${FULL_GIT_URL}`,
+    `  or:  ${FULL_GIT_WINGET}`,
+    "  then fully quit and relaunch Claude Code. (If you already have a real",
+    "  bash elsewhere, set CLAUDE_CODE_GIT_BASH_PATH to that bash.exe instead.)",
+  ];
 
   switch (diag.status) {
-    case "slim":
+    case "partial-git":
       return [
-        paint("⚠ Windows: Claude Code can't launch your hooks."),
-        "  Your Git install lacks usr\\bin\\bash.exe (slim/MinGit layout),",
-        "  so hooks silently never run. Add this to ~/.claude/settings.json:",
-        "",
-        line(diag.recommended),
-        "",
-        "  Then restart Claude Code.",
+        paint("⚠ Windows: your Git install has no bash — hooks can't run."),
+        `  ${realBashPath(diag.gitRoot)} is missing`,
+        "  (a partial / MinGit install: the bin\\bash.exe stub is only a wrapper",
+        "  to that missing binary, so pointing at it does not help).",
+        ...installFullGit,
       ].join("\n");
 
-    case "no-bash":
-      return [
-        paint("⚠ Windows: no bash.exe found under your Git install."),
-        `  Looked under ${diag.gitRoot} but found neither usr\\bin\\bash.exe`,
-        "  nor bin\\bash.exe. Claude Code can't launch hooks without Git Bash.",
-        "  Install full Git for Windows, or point at a bash.exe you have:",
-        "",
-        line("C:\\path\\to\\bash.exe"),
-        "",
-        "  Then restart Claude Code.",
-      ].join("\n");
-
-    case "already-set-missing":
+    case "configured-missing":
       return [
         paint("⚠ Windows: CLAUDE_CODE_GIT_BASH_PATH points at a missing file."),
         `  ${diag.path}`,
-        "  Claude Code can't launch hooks. Fix the path in your environment or",
-        "  ~/.claude/settings.json, then restart Claude Code.",
+        "  Claude Code can't launch hooks. Fix the path (or unset it) in your",
+        "  environment or ~/.claude/settings.json, then relaunch Claude Code.",
       ].join("\n");
 
     default:
-      // not-windows | already-set | ok | no-git — nothing actionable to warn.
+      // not-windows | configured | ok | no-git — nothing actionable to warn.
+      // (`doctor` separately runs `configured`/`ok` to catch broken wrappers.)
       return null;
   }
 }

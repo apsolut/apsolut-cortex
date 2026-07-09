@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.11] – 2026-07-09
+
+### Fixed
+- **Windows Git Bash diagnosis was giving wrong advice.** When `usr\bin\bash.exe` was absent, `doctor`/`init`/README recommended pointing `CLAUDE_CODE_GIT_BASH_PATH` at `<git>\bin\bash.exe` — but that stub is only a ~47 KB wrapper that re-execs the *missing* `usr\bin\bash.exe`, so it fails identically. The recommendation was broken in exactly the case it was meant to fix. `usr\bin\bash.exe` is now treated as the single source of truth: if it's absent the install is diagnosed as **partial/MinGit** and the remedy is to install the full Git for Windows (`winget install --id Git.Git -e` or git-scm.com), never the wrapper.
+- **`doctor` now verifies bash by running it**, not by checking the file exists. It executes the resolved bash (`bash -c "exit 0"`), so a broken wrapper — which exists on disk but won't exec — is correctly reported as broken instead of "✓ set and exists". This catches the "looks configured but hooks still fail" state that a file check can't.
+- README troubleshooting rewritten: clarifies Claude Code runs command hooks through Git Bash (not cmd/PowerShell/WSL), that a partial Git is the usual cause, and that pointing at the `bin\` wrapper won't help.
+
 ## [0.12.10] – 2026-07-09
 
 ### Added
@@ -238,7 +245,8 @@ Fixes from the 2026-07-03 pre-release deep review (P1 batch).
 ### Added
 - Initial public release on npm.
 
-[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.10...HEAD
+[Unreleased]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.11...HEAD
+[0.12.11]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.10...v0.12.11
 [0.12.10]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.8...v0.12.10
 [0.12.8]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.6...v0.12.8
 [0.12.6]: https://github.com/apsolut/apsolut-cortex/compare/v0.12.5...v0.12.6

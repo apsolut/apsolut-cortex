@@ -33,7 +33,7 @@ import { snapshot, listBackups, restore, reencryptToKey, reencryptUnsupportedRea
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 import { exportVault, OBSIDIAN_DIR } from "./export.js";
 import { getBreakerState } from "./compress.js";
-import { diagnoseGitBash, gatherGitBashProbe, renderGitBashWarning } from "./gitbash.js";
+import { diagnoseGitBash, gatherGitBashProbe, renderGitBashWarning, bashRuns, FULL_GIT_URL, FULL_GIT_WINGET } from "./gitbash.js";
 import {
   promoteMemory,
   demoteMemory,
@@ -318,9 +318,10 @@ async function init() {
 `;
   console.log(BANNER);
 
-  // Windows: hooks run through Git Bash. On a slim/MinGit install CC can't find
-  // bash and every hook silently no-ops. The failing hook can't report this, so
-  // surface it here at install time. Instruct only — never mutate global config.
+  // Windows: hooks run through Git Bash. On a partial/MinGit install the real
+  // bash (usr\bin\bash.exe) is missing and every hook no-ops. The failing hook
+  // can't report this, so surface it here at install time. Instruct only —
+  // never mutate global config.
   const settingsEnv = (settings.env as Record<string, string> | undefined)?.CLAUDE_CODE_GIT_BASH_PATH;
   const gitBashWarning = renderGitBashWarning(diagnoseGitBash(gatherGitBashProbe(settingsEnv)), y);
   if (gitBashWarning) {
@@ -352,24 +353,48 @@ function doctor() {
 
   const diag = diagnoseGitBash(gatherGitBashProbe(settingsEnv));
 
+  // For a bash that's supposed to work (default resolution or an explicit
+  // override), don't trust the file existing — actually run it. A partial/
+  // MinGit `bin\bash.exe` stub exists on disk but fails to exec, which is
+  // exactly the confusing "looks configured but hooks still fail" state.
+  const brokenBash = (label: string, path: string) => {
+    console.log(`${y("⚠")} ${label} exists but won't run — hooks can't launch.`);
+    console.log(`    ${path}`);
+    console.log(`    Your Git is a partial/MinGit install with no real bash.`);
+    console.log(`    Install the full Git for Windows:`);
+    console.log(`      ${FULL_GIT_URL}`);
+    console.log(`      or:  ${FULL_GIT_WINGET}`);
+    console.log(`    then fully quit and relaunch Claude Code.`);
+    process.exitCode = 1;
+  };
+
   switch (diag.status) {
     case "not-windows":
       console.log(`${g("✓")} Git Bash check skipped (not Windows).`);
       break;
     case "ok":
-      console.log(`${g("✓")} Git Bash resolves — hooks can launch.`);
-      console.log(`    ${diag.path}`);
+      if (bashRuns(diag.path)) {
+        console.log(`${g("✓")} Git Bash resolves and runs — hooks can launch.`);
+        console.log(`    ${diag.path}`);
+      } else {
+        brokenBash("Git Bash", diag.path);
+      }
       break;
-    case "already-set":
-      console.log(`${g("✓")} CLAUDE_CODE_GIT_BASH_PATH is set and exists.`);
-      console.log(`    ${diag.path}`);
+    case "configured":
+      if (bashRuns(diag.path)) {
+        console.log(`${g("✓")} CLAUDE_CODE_GIT_BASH_PATH is set and runs.`);
+        console.log(`    ${diag.path}`);
+      } else {
+        brokenBash("CLAUDE_CODE_GIT_BASH_PATH", diag.path);
+      }
       break;
     case "no-git":
       console.log(`${y("?")} Couldn't locate git via PATH, so Git Bash can't be checked.`);
-      console.log(`    If hooks don't fire, set CLAUDE_CODE_GIT_BASH_PATH to a bash.exe`);
-      console.log(`    in ~/.claude/settings.json, then restart Claude Code.`);
+      console.log(`    If hooks don't fire, install the full Git for Windows or set`);
+      console.log(`    CLAUDE_CODE_GIT_BASH_PATH to a real bash.exe, then relaunch Claude Code.`);
       break;
     default: {
+      // partial-git | configured-missing
       const warning = renderGitBashWarning(diag, y);
       if (warning) console.log(warning);
       process.exitCode = 1;
