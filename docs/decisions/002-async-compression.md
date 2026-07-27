@@ -1,7 +1,12 @@
 # 002 — Async in-session compression via detached workers
 
-**Status:** accepted
+**Status:** accepted, amended by [003](003-native-async-hooks.md)
 **Date:** 2026-05-25
+
+> **2026-07-27:** The premise below ("that flag does not exist") is
+> obsolete — Claude Code ≥ 2.1.196 supports `async`/`asyncRewake` on
+> command hooks. See ADR-003 for how we adopted them while keeping the
+> worker for older versions.
 
 ## Context
 

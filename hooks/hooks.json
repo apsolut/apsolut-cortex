@@ -10,12 +10,34 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit.js\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use.js\"",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use.js\"",
+            "async": true
           }
         ]
       }
@@ -25,7 +47,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop.js\"",
+            "async": true
           }
         ]
       }
@@ -36,6 +59,18 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-end.js\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.js\"",
+            "timeout": 60,
+            "asyncRewake": true
           }
         ]
       }

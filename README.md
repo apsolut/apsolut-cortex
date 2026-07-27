@@ -23,6 +23,22 @@ that step runs fully local if you use Ollama instead).
 
 ---
 
+## Documentation
+
+Topic-focused docs live in [`docs/`](docs/) — start there if you want the deep dive on one area:
+
+- [Operations](docs/OPERATIONS.md) — day-to-day runbook: health checks, logs, recovery
+- [Configuration](docs/CONFIG.md) — all `APSOLUT_CORTEX_*` env vars
+- [Storage](docs/STORAGE.md) — what lives under `~/.apsolut-cortex/` and the DB schema
+- [Compression providers](docs/PROVIDERS.md) — Anthropic API vs local alternatives
+- [Ollama setup](docs/OLLAMA.md) — fully local compression, no API key
+- [Knowledge / research notes](docs/KNOWLEDGE.md) — memory-systems methodologies: implemented vs candidate
+- [Decision records](docs/decisions/) — why libSQL, why async compression, etc.
+
+Prefer one continuous read instead? The rest of this README covers install through troubleshooting.
+
+---
+
 ## Contents
 
 - [Install](#install) · [Quick start](#quick-start) · [What's shipped](#whats-shipped)
@@ -138,9 +154,13 @@ Everything is automatic. Hooks fire across the Claude Code session lifecycle:
 - First session shows an onboarding guide
 
 **During the session**
-- Tool failures captured and stored
+- Tool failures captured and stored (via `PostToolUse` + the dedicated `PostToolUseFailure` event)
 - Config-file reads noted as discoveries
 - Transcript scanned for self-corrections when Claude stops
+- Every user prompt checked for pushback ("no, that's wrong…") — detected corrections are stored and linked to the memory they likely contradict
+- Relevant high-weight corrections/decisions injected per-prompt when they match what you're asking (disable with `CORTEX_PROMPT_INJECT=0`)
+- Capture hooks run with `async: true` on Claude Code ≥ 2.1.196 — zero latency added to tool calls
+- Observations carry the `prompt_id` of the prompt that caused them, for precise attribution
 
 **Session end**
 - Observations compressed into memories via Claude Haiku (Ollama fallback if no API key)
@@ -151,7 +171,8 @@ Everything is automatic. Hooks fire across the Claude Code session lifecycle:
 
 **In-session** *(opt-in via `apsolut-cortex install-hooks`)*
 - Token budget exceeded → detached background worker compresses mid-session, never blocking tool execution
-- `PreCompact` event → synchronous safety capture right before Claude Code compacts its own context
+- `PreCompact` event → safety capture before Claude Code compacts its own context; runs in the background (`asyncRewake`) on Claude Code ≥ 2.1.196 and wakes Claude if the capture fails
+- After compaction → `SessionStart` re-fires with `source: "compact"` and cortex re-injects the top corrections/decisions, so the post-compaction context isn't memory-blind
 
 ---
 

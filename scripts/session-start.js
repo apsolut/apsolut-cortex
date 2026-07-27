@@ -251,12 +251,25 @@ var migration4 = {
 };
 var _004_memory_tags_default = migration4;
 
+// src/migrations/005-observation-prompt-id.ts
+var migration5 = {
+  name: "005-observation-prompt-id",
+  async up(client) {
+    await client.executeMultiple(`
+      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
+    `);
+  }
+};
+var _005_observation_prompt_id_default = migration5;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
   _003_raw_messages_default,
-  _004_memory_tags_default
+  _004_memory_tags_default,
+  _005_observation_prompt_id_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -569,6 +582,29 @@ async function main() {
     const db = await getDb();
     await upsertProject(db, { id: project.id, name: project.name, path: cwd });
     await upsertSession(db, { id: sessionId, project_id: project.id });
+    if (data.source === "compact") {
+      const memResult = await db.execute({
+        sql: `SELECT content, category FROM memories
+              WHERE project_id = ? AND weight > 0.5
+                AND category IN ('correction', 'decision')
+              ORDER BY weight DESC, created_at DESC
+              LIMIT 8`,
+        args: [project.id]
+      });
+      const mems = memResult.rows;
+      if (mems.length > 0) {
+        const lines = mems.map((m) => `- [${m.category}] ${m.content}`);
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: `[apsolut-cortex] Context was compacted. Re-injecting persistent memories:
+${lines.join(`
+`)}`
+          }
+        }));
+      }
+      process.exit(0);
+    }
     const hashes = TRACKED_FILES.map((f) => ({ path: f, hash: hashFile(join2(cwd, f)) })).filter((h) => h.hash !== null);
     if (hashes.length > 0)
       await snapshotFileHashes(db, project.id, hashes);

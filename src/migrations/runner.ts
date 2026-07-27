@@ -17,6 +17,7 @@ import initialSchema from "./001-initial-schema.js";
 import rangeLinkedMemories from "./002-range-linked-memories.js";
 import rawMessages from "./003-raw-messages.js";
 import memoryTags from "./004-memory-tags.js";
+import observationPromptId from "./005-observation-prompt-id.js";
 
 export interface Migration {
   name: string;
@@ -30,6 +31,7 @@ export const MIGRATIONS: Migration[] = [
   rangeLinkedMemories,
   rawMessages,
   memoryTags,
+  observationPromptId,
 ];
 
 const LOCK_TIMEOUT_MS = 30_000;

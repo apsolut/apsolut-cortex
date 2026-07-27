@@ -220,12 +220,25 @@ var migration4 = {
 };
 var _004_memory_tags_default = migration4;
 
+// src/migrations/005-observation-prompt-id.ts
+var migration5 = {
+  name: "005-observation-prompt-id",
+  async up(client) {
+    await client.executeMultiple(`
+      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
+    `);
+  }
+};
+var _005_observation_prompt_id_default = migration5;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
   _003_raw_messages_default,
-  _004_memory_tags_default
+  _004_memory_tags_default,
+  _005_observation_prompt_id_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -1416,6 +1429,9 @@ switch (cmd) {
   case "hook:session-start":
     await runHook("session-start");
     break;
+  case "hook:user-prompt-submit":
+    await runHook("user-prompt-submit");
+    break;
   case "hook:post-tool-use":
     await runHook("post-tool-use");
     break;
@@ -1529,8 +1545,10 @@ async function init() {
   const hookCmd = IS_DIST ? "apsolut-cortex" : `bun run "${join6(__dirname2, "cli.ts").replace(/\\/g, "/")}"`;
   const hookEntries = {
     SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
-    PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use` }] }],
-    Stop: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:stop` }] }],
+    UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:user-prompt-submit` }] }],
+    PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use`, async: true }] }],
+    PostToolUseFailure: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use`, async: true }] }],
+    Stop: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:stop`, async: true }] }],
     SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-end` }] }]
   };
   let settings = {};
@@ -1969,7 +1987,15 @@ async function installHooksCmd(args) {
     return;
   }
   const tmpl = JSON.parse(readFileSync4(template, "utf-8"));
-  const m6Events = ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"];
+  const m6Events = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "SessionEnd",
+    "PreCompact"
+  ];
   if (!IS_DIST && !args.includes("--force")) {
     console.log(`[apsolut-cortex] install-hooks is intended for npm-installed users.`);
     console.log(`[apsolut-cortex] In dev mode, run with --force if you really want to wire`);

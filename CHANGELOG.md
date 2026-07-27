@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] – 2026-07-28
+
+Adopts the modern Claude Code hook surface (verified against 2.1.220; everything degrades gracefully below 2.1.196 — older versions ignore the new fields and run hooks synchronously as before). See ADR-003.
+
+### Added
+- **`UserPromptSubmit` hook** — two jobs, both SQLite-only (no embedder/LLM, stays well under the event's 30s budget): (1) *pushback detection* — prompts that read as corrections ("no, that's wrong", "I already told you…") are stored as correction observations, BM25-linked to the stored memory they most likely contradict, feeding session-end compression and future supersession; (2) *per-prompt contextual injection* — high-weight correction/decision memories matching the prompt's terms are returned as `additionalContext` (max 2 per prompt, deduped per session, disable with `CORTEX_PROMPT_INJECT=0`). Never blocks a prompt: every failure path exits 0.
+- **Post-compaction re-injection** — `SessionStart` now branches on `source: "compact"` and emits a lean `additionalContext` block with the top corrections/decisions instead of the full banner. Previously, everything injected at startup was lost the moment Claude Code compacted its context.
+- **`PostToolUseFailure` registration** — failure capture no longer depends on sniffing error strings out of `PostToolUse` payloads; the dedicated event is authoritative, and unrecognized failure payloads are synthesized into observations directly.
+- **`prompt_id` on observations** (migration 005) — Claude Code ≥ 2.1.196 identifies the prompt behind every hook event; storing it lets the feedback loop attribute a failure/correction to the exact prompt, not just the session (KNOWLEDGE.md item 7 infrastructure).
+- **Native async hook registration** — `PostToolUse`, `PostToolUseFailure`, and `Stop` register with `async: true`, taking capture fully off the tool-call critical path; `PreCompact` registers with `asyncRewake: true` and now exits 2 on compression failure so a lost compaction window wakes Claude instead of dying silently. The detached compress-worker is retained for pre-2.1.196 installs (ADR-003).
+
+### Changed
+- `init` and `install-hooks` both wire the new events; `install-hooks` template (`hooks-m6.json`) and the plugin manifest (`hooks/hooks.json`) updated to the full modern set.
+
 ## [0.12.11] – 2026-07-09
 
 ### Fixed

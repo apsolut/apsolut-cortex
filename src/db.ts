@@ -235,14 +235,15 @@ export async function getRecentSummaries(
 export async function insertObservation(
   db: DbConn,
   obs: { session_id: string; project_id: string; tool_name?: string;
-         content: string; category?: string }
+         content: string; category?: string; prompt_id?: string }
 ): Promise<void> {
   await db.execute({
-    sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at, prompt_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       crypto.randomUUID(), obs.session_id, obs.project_id,
       obs.tool_name ?? null, obs.content, obs.category ?? null, Date.now(),
+      obs.prompt_id ?? null,
     ],
   });
 }

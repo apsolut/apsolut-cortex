@@ -206,12 +206,25 @@ var migration4 = {
 };
 var _004_memory_tags_default = migration4;
 
+// src/migrations/005-observation-prompt-id.ts
+var migration5 = {
+  name: "005-observation-prompt-id",
+  async up(client) {
+    await client.executeMultiple(`
+      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
+    `);
+  }
+};
+var _005_observation_prompt_id_default = migration5;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
   _003_raw_messages_default,
-  _004_memory_tags_default
+  _004_memory_tags_default,
+  _005_observation_prompt_id_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -379,8 +392,8 @@ async function upsertSession(db, s) {
 }
 async function insertObservation(db, obs) {
   await db.execute({
-    sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at, prompt_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       crypto.randomUUID(),
       obs.session_id,
@@ -388,7 +401,8 @@ async function insertObservation(db, obs) {
       obs.tool_name ?? null,
       obs.content,
       obs.category ?? null,
-      Date.now()
+      Date.now(),
+      obs.prompt_id ?? null
     ]
   });
 }

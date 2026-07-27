@@ -206,12 +206,25 @@ var migration4 = {
 };
 var _004_memory_tags_default = migration4;
 
+// src/migrations/005-observation-prompt-id.ts
+var migration5 = {
+  name: "005-observation-prompt-id",
+  async up(client) {
+    await client.executeMultiple(`
+      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
+    `);
+  }
+};
+var _005_observation_prompt_id_default = migration5;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
   _003_raw_messages_default,
-  _004_memory_tags_default
+  _004_memory_tags_default,
+  _005_observation_prompt_id_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {

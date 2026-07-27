@@ -1,10 +1,17 @@
 /**
- * Claude Code hook: PostToolUse
+ * Claude Code hook: PostToolUse + PostToolUseFailure
  *
  * Captures tool failures and config reads as raw observations.
  * Compressed into memories at session end — not stored as memories directly.
  *
- * Input: { session_id, cwd, tool_name, tool_input, tool_response }
+ * Registered for both events: PostToolUseFailure (Claude Code ≥ 2.1.x)
+ * fires only on failed tool calls with the error in tool_response/error,
+ * so failure capture no longer depends on sniffing error strings out of
+ * successful-call payloads. When the event is a failure and the classifier
+ * finds nothing, we synthesize an observation from the error directly.
+ *
+ * Input: { session_id, cwd, hook_event_name, prompt_id, tool_name,
+ *          tool_input, tool_response, error? }
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -31,9 +38,12 @@ async function main() {
     session_id?: string;
     cwd?: string;
     transcript_path?: string;
+    hook_event_name?: string;
+    prompt_id?: string;
     tool_name?: string;
     tool_input?: unknown;
     tool_response?: unknown;
+    error?: unknown;
   } = {};
   try { data = JSON.parse(raw); } catch { process.exit(0); }
 
@@ -53,11 +63,26 @@ async function main() {
     const db = await getDb();
     await upsertSession(db, { id: sessionId, project_id: project.id });
 
-    const result = classifyToolUse(
+    const isFailureEvent = data.hook_event_name === "PostToolUseFailure";
+    let result = classifyToolUse(
       data.tool_name ?? "",
       data.tool_input,
-      data.tool_response
+      isFailureEvent ? (data.error ?? data.tool_response) : data.tool_response
     );
+
+    // PostToolUseFailure is authoritative: the call failed even if the
+    // classifier's error-string heuristics didn't recognize the payload.
+    if (isFailureEvent && !result?.worth_storing) {
+      const errText = JSON.stringify(data.error ?? data.tool_response ?? "")
+        .replace(/^"|"$/g, "").slice(0, 200);
+      if (errText.length > 10) {
+        result = {
+          worth_storing: true,
+          category: "failure",
+          summary: `Tool ${data.tool_name ?? "unknown"} failed: ${errText}`,
+        };
+      }
+    }
 
     if (result?.worth_storing) {
       const content = stripPrivate(result.summary);
@@ -74,6 +99,7 @@ async function main() {
             tool_name: data.tool_name,
             content,
             category: result.category,
+            prompt_id: data.prompt_id,
           });
         }
       }

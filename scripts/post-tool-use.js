@@ -207,12 +207,25 @@ var migration4 = {
 };
 var _004_memory_tags_default = migration4;
 
+// src/migrations/005-observation-prompt-id.ts
+var migration5 = {
+  name: "005-observation-prompt-id",
+  async up(client) {
+    await client.executeMultiple(`
+      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
+    `);
+  }
+};
+var _005_observation_prompt_id_default = migration5;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
   _003_raw_messages_default,
-  _004_memory_tags_default
+  _004_memory_tags_default,
+  _005_observation_prompt_id_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
 async function runMigrations(client, migrations = MIGRATIONS) {
@@ -383,8 +396,8 @@ async function upsertSession(db, s) {
 }
 async function insertObservation(db, obs) {
   await db.execute({
-    sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at, prompt_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       crypto.randomUUID(),
       obs.session_id,
@@ -392,7 +405,8 @@ async function insertObservation(db, obs) {
       obs.tool_name ?? null,
       obs.content,
       obs.category ?? null,
-      Date.now()
+      Date.now(),
+      obs.prompt_id ?? null
     ]
   });
 }
@@ -1120,7 +1134,18 @@ async function main() {
   try {
     const db = await getDb();
     await upsertSession(db, { id: sessionId, project_id: project.id });
-    const result = classifyToolUse(data.tool_name ?? "", data.tool_input, data.tool_response);
+    const isFailureEvent = data.hook_event_name === "PostToolUseFailure";
+    let result = classifyToolUse(data.tool_name ?? "", data.tool_input, isFailureEvent ? data.error ?? data.tool_response : data.tool_response);
+    if (isFailureEvent && !result?.worth_storing) {
+      const errText = JSON.stringify(data.error ?? data.tool_response ?? "").replace(/^"|"$/g, "").slice(0, 200);
+      if (errText.length > 10) {
+        result = {
+          worth_storing: true,
+          category: "failure",
+          summary: `Tool ${data.tool_name ?? "unknown"} failed: ${errText}`
+        };
+      }
+    }
     if (result?.worth_storing) {
       const content = stripPrivate(result.summary);
       if (content) {
@@ -1134,7 +1159,8 @@ async function main() {
             project_id: project.id,
             tool_name: data.tool_name,
             content,
-            category: result.category
+            category: result.category,
+            prompt_id: data.prompt_id
           });
         }
       }

@@ -3,9 +3,14 @@
  *
  * First session: shows onboarding guide with available tools
  * Returning sessions: shows last session summary + key memories
+ * After compaction (source === "compact"): re-injects a lean block of the
+ * top corrections/decisions as additionalContext — compaction just threw
+ * away whatever we injected at startup, so without this the rest of the
+ * session runs memory-blind.
  *
- * Input:  { session_id: string, cwd: string }
- * Output: formatted context block
+ * Input:  { session_id: string, cwd: string, source?: string }
+ * Output: formatted context block (startup/resume/clear),
+ *         or hookSpecificOutput JSON (compact)
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -64,7 +69,7 @@ async function main() {
     process.stdin.on("data", (c: string) => d += c);
     process.stdin.on("end", () => resolve(d));
   });
-  let data: { session_id?: string; cwd?: string } = {};
+  let data: { session_id?: string; cwd?: string; source?: string } = {};
   try { data = JSON.parse(raw); } catch { process.exit(0); }
 
   const cwd = data.cwd ?? process.cwd();
@@ -83,6 +88,32 @@ async function main() {
     const db = await getDb();
     await upsertProject(db, { id: project.id, name: project.name, path: cwd });
     await upsertSession(db, { id: sessionId, project_id: project.id });
+
+    // ── Post-compaction re-injection ──────────────────────────────────
+    // Lean and machine-shaped: no banner, just the memories Claude most
+    // needs back after its context was summarized away.
+    if (data.source === "compact") {
+      const memResult = await db.execute({
+        sql: `SELECT content, category FROM memories
+              WHERE project_id = ? AND weight > 0.5
+                AND category IN ('correction', 'decision')
+              ORDER BY weight DESC, created_at DESC
+              LIMIT 8`,
+        args: [project.id],
+      });
+      const mems = memResult.rows as unknown as Array<{ content: string; category: string }>;
+      if (mems.length > 0) {
+        const lines = mems.map((m) => `- [${m.category}] ${m.content}`);
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext:
+              `[apsolut-cortex] Context was compacted. Re-injecting persistent memories:\n${lines.join("\n")}`,
+          },
+        }));
+      }
+      process.exit(0);
+    }
 
     // Snapshot config file hashes for change detection
     const hashes = TRACKED_FILES

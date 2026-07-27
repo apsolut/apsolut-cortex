@@ -9,6 +9,13 @@
  * Single-flight is still respected (a background worker may already be
  * mid-compression) — if it is, we wait briefly, then take over.
  *
+ * Registered with `asyncRewake: true` (Claude Code ≥ 2.1.196): the hook
+ * runs in the background without delaying compaction, and a compression
+ * failure (exit code 2) wakes Claude with our stderr so the loss is
+ * surfaced instead of silent. On older Claude Code the flag is ignored
+ * and the hook simply runs synchronously as before. The transcript file
+ * on disk survives compaction, so background execution loses nothing.
+ *
  * Input: { session_id, cwd, transcript_path, ... }
  */
 
@@ -67,7 +74,13 @@ async function main(): Promise<void> {
       `[apsolut-cortex] PreCompact captured: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories (+${result.duplicates_bumped} bumped)\n`
     );
   } catch (e) {
-    process.stderr.write(`[apsolut-cortex] PreCompact error: ${e}\n`);
+    process.stderr.write(
+      `[apsolut-cortex] PreCompact compression failed — this compaction window was NOT persisted to memory: ${e}\n`
+    );
+    releaseLock(sessionId);
+    // Exit 2 → with asyncRewake, Claude is woken and shown the stderr
+    // above; it can retry via the MCP tools or warn the user.
+    process.exit(2);
   } finally {
     releaseLock(sessionId);
   }

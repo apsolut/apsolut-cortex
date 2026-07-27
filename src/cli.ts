@@ -80,6 +80,7 @@ switch (cmd) {
   case "eval":               await evalCmd(process.argv[3]); break;
   case "uninstall":          uninstall(); break;
   case "hook:session-start":   await runHook("session-start"); break;
+  case "hook:user-prompt-submit": await runHook("user-prompt-submit"); break;
   case "hook:post-tool-use":   await runHook("post-tool-use"); break;
   case "hook:stop":            await runHook("stop"); break;
   case "hook:session-end":     await runHook("session-end"); break;
@@ -197,11 +198,17 @@ async function init() {
     : `bun run "${join(__dirname, "cli.ts").replace(/\\/g, "/")}"`;
 
 
-  const hookEntries: Record<string, { matcher: string; hooks: { type: string; command: string }[] }[]> = {
-    SessionStart: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
-    PostToolUse:  [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use` }] }],
-    Stop:         [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:stop` }] }],
-    SessionEnd:   [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-end` }] }],
+  // `async: true` (Claude Code ≥ 2.1.196) keeps capture-only hooks off the
+  // critical path; older versions ignore the field and run them sync as
+  // before. SessionStart and UserPromptSubmit stay sync — they return
+  // context output.
+  const hookEntries: Record<string, { matcher: string; hooks: { type: string; command: string; async?: boolean }[] }[]> = {
+    SessionStart:       [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
+    UserPromptSubmit:   [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:user-prompt-submit` }] }],
+    PostToolUse:        [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use`, async: true }] }],
+    PostToolUseFailure: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use`, async: true }] }],
+    Stop:               [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:stop`, async: true }] }],
+    SessionEnd:         [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-end` }] }],
   };
 
   let settings: Record<string, unknown> = {};
@@ -684,7 +691,10 @@ async function installHooksCmd(args: string[]) {
   }
 
   const tmpl = JSON.parse(readFileSync(template, "utf-8")) as Record<string, unknown>;
-  const m6Events = ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"];
+  const m6Events = [
+    "SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure",
+    "Stop", "SessionEnd", "PreCompact",
+  ];
 
   // For non-installed (dev) usage, the command is `bun run path/to/cli.ts`
   // rather than the global binary. install-hooks always assumes the user
