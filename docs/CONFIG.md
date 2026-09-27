@@ -8,9 +8,9 @@ Authoritative source: [`src/config.ts`](../src/config.ts). Grouped by concern:
 - `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` — `0.92` — cosine similarity floor for dedup at insert time.
 
 **Decay & pruning**
-- `APSOLUT_CORTEX_DECAY_DAYS` — `7` — days unused before decay starts.
-- `APSOLUT_CORTEX_DECAY_OBSERVED` — `0.95` — weekly decay multiplier for `observed` trust.
-- `APSOLUT_CORTEX_DECAY_VALIDATED` — `0.98` — weekly decay multiplier for `validated` trust.
+- `APSOLUT_CORTEX_DECAY_DAYS` — `7` — days unused before decay starts, and the length of one decay window. A memory is decayed at most once per window (tracked per row in `memories.last_decay_at`), so decay rate does not depend on how many sessions you run.
+- `APSOLUT_CORTEX_DECAY_OBSERVED` — `0.95` — per-window decay multiplier for `observed` trust.
+- `APSOLUT_CORTEX_DECAY_VALIDATED` — `0.98` — per-window decay multiplier for `validated` trust.
 - `APSOLUT_CORTEX_PRUNE_WEIGHT` — `0.1` — drop threshold (`proven`/`canonical` are never pruned).
 
 **Search & ranking**
@@ -18,6 +18,7 @@ Authoritative source: [`src/config.ts`](../src/config.ts). Grouped by concern:
 - `APSOLUT_CORTEX_MMR_LAMBDA` — `0.7` — relevance vs diversity (0–1).
 - `APSOLUT_CORTEX_SEARCH_LIMIT_MAX` — `10` — max results returned to caller.
 - `APSOLUT_CORTEX_SEARCH_MULTIPLIER` — `2` — overfetch multiplier before MMR.
+- `APSOLUT_CORTEX_RECALL_TOKEN_BUDGET` — `4000` — ceiling on a single `memory_recall` response. Longer source ranges are truncated with an `offset` to resume from.
 
 **Weight updates**
 - `APSOLUT_CORTEX_WEIGHT_ALPHA` — `0.3` — EMA alpha.
@@ -31,12 +32,15 @@ Authoritative source: [`src/config.ts`](../src/config.ts). Grouped by concern:
 - `APSOLUT_CORTEX_MANUAL_WEIGHT` — `1.2` — initial weight for explicit `memory_store` calls.
 
 **Range-linked memories (M4)**
-- `APSOLUT_CORTEX_RAW_RETENTION_DAYS` — `90` — days to keep `raw_messages` rows. Cleanup is gated on M8's `is_pinned`; until then nothing is deleted from this table.
+- `APSOLUT_CORTEX_RAW_RETENTION_DAYS` — `90` — days to keep `raw_messages` rows. Enforced on `SessionEnd` since 0.14.0: rows older than this are deleted regardless of whether a memory still points at them (`memory_recall` then reports the window as pruned). `<private>…</private>` blocks are stripped before a raw message is stored at all.
 
 **In-session compression (M6 — only active with `install-hooks`)**
 - `APSOLUT_CORTEX_OBSERVE_THRESHOLD` — `30000` — conversation tokens that fire a background compression run from `PostToolUse`.
 - `APSOLUT_CORTEX_OBSERVE_BLOCK_MULT` — `1.2` — synchronous compression kicks in at `THRESHOLD × this` (default 36000) as a last-resort safety net.
 - `APSOLUT_CORTEX_REFLECT_THRESHOLD` — `40000` — when this session's memories collectively exceed this token count, the reflector layer condenses them into denser meta-memories on `SessionEnd`.
+
+**Prompt-time injection**
+- `CORTEX_PROMPT_INJECT` — `1` — set to `0` to stop `UserPromptSubmit` from adding matching high-weight correction/decision memories to a prompt's context (max 2 per prompt, deduped per session).
 
 **Eval (M1)**
 - `APSOLUT_CORTEX_SHADOW` — `false` — when truthy (`true`/`1`/`yes`), `memory_search` runs retrieval but returns nothing to Claude. Would-be matches go to `~/.apsolut-cortex/logs/shadow.jsonl` instead. Useful for tuning retrieval against a real session without polluting context.

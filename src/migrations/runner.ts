@@ -18,6 +18,7 @@ import rangeLinkedMemories from "./002-range-linked-memories.js";
 import rawMessages from "./003-raw-messages.js";
 import memoryTags from "./004-memory-tags.js";
 import observationPromptId from "./005-observation-prompt-id.js";
+import decayClock from "./006-decay-clock.js";
 
 export interface Migration {
   name: string;
@@ -32,9 +33,14 @@ export const MIGRATIONS: Migration[] = [
   rawMessages,
   memoryTags,
   observationPromptId,
+  decayClock,
 ];
 
+/** Age after which a lock row is assumed abandoned by a dead process. */
 const LOCK_TIMEOUT_MS = 30_000;
+/** How long a starting process waits for a live lock before giving up. */
+const LOCK_WAIT_MS = 5_000;
+const LOCK_RETRY_MS = 50;
 
 export interface MigrateResult {
   applied: string[];
@@ -46,6 +52,17 @@ export async function runMigrations(
   migrations: Migration[] = MIGRATIONS
 ): Promise<MigrateResult> {
   await ensureMigrationsTable(client);
+
+  // Fast path: when every migration is already on record there is nothing to
+  // serialize, so skip the lock entirely. getDb() runs this on every hook
+  // invocation and the lock is an INSERT+DELETE pair — two WAL writes paid
+  // for a guaranteed no-op, plus a needless chance to collide with a
+  // concurrent process.
+  const preApplied = await getAppliedNames(client);
+  if (migrations.every((m) => preApplied.has(m.name))) {
+    return { applied: [], skipped: migrations.map((m) => m.name) };
+  }
+
   await acquireLock(client);
 
   try {
@@ -107,31 +124,53 @@ async function getAppliedNames(client: Client): Promise<Set<string>> {
   return new Set(result.rows.map((r) => r.name as string));
 }
 
+/**
+ * Take the advisory lock, waiting for a live holder instead of failing on
+ * first contention. Hooks, the MCP server and the CLI all open the DB at
+ * once on a cold start; a single INSERT attempt made one of them die with
+ * an error, and if the winner had already released the lock the error message
+ * read "held by pid undefined since Invalid Date" because the follow-up
+ * SELECT found nothing.
+ */
 async function acquireLock(client: Client): Promise<void> {
-  const now = Date.now();
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let holder: string | null = null;
 
-  // Clear any stale lock first.
-  await client.execute({
-    sql: "DELETE FROM _migrations_lock WHERE acquired_at < ?",
-    args: [now - LOCK_TIMEOUT_MS],
-  });
+  for (;;) {
+    const now = Date.now();
 
-  try {
+    // Clear any abandoned lock (process died mid-migration) first.
     await client.execute({
-      sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
-      args: [process.pid, now],
+      sql: "DELETE FROM _migrations_lock WHERE acquired_at < ?",
+      args: [now - LOCK_TIMEOUT_MS],
     });
-  } catch {
-    const held = await client.execute(
-      "SELECT pid, acquired_at FROM _migrations_lock WHERE id = 1"
-    );
-    const row = held.rows[0];
-    throw new Error(
-      `[apsolut-cortex] migration lock held by pid ${row?.pid} since ${new Date(
-        row?.acquired_at as number
-      ).toISOString()}. If this is stale, run: DELETE FROM _migrations_lock;`
-    );
+
+    try {
+      await client.execute({
+        sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
+        args: [process.pid, now],
+      });
+      return;
+    } catch {
+      // Contended. Record who has it (may be nobody by now — the holder can
+      // release between our INSERT failing and this SELECT, in which case the
+      // next iteration simply wins).
+      const held = await client.execute(
+        "SELECT pid, acquired_at FROM _migrations_lock WHERE id = 1"
+      );
+      const row = held.rows[0];
+      if (row) {
+        holder = `pid ${row.pid} since ${new Date(Number(row.acquired_at)).toISOString()}`;
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
+    }
   }
+
+  throw new Error(
+    `[apsolut-cortex] migration lock still held after ${LOCK_WAIT_MS}ms` +
+      `${holder ? ` (${holder})` : ""}. If this is stale, run: DELETE FROM _migrations_lock;`
+  );
 }
 
 async function releaseLock(client: Client): Promise<void> {

@@ -1,7 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { coerceCategory, coerceTier, clampText, CONTENT_MAX, CONTEXT_MAX } from "./validate.js";
 
 const BREAKER_PATH = join(homedir(), ".apsolut-cortex", "compression-state.json");
 const MAX_FAILURES = 3;
@@ -89,7 +89,14 @@ async function compressWithAnthropic(
   observations: Array<{ tool_name: string | null; content: string; category: string | null }>,
   project: string
 ): Promise<CompressionResult> {
-  const client = new Anthropic();
+  // Imported here, not at module load: the SDK is only needed when a key is
+  // set and compression actually runs, while this module is imported by the
+  // CLI (for the breaker state) and by hooks.
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  // Hook budgets are measured in seconds; the SDK's default timeout is 10
+  // minutes with retries, which can outlive the hook itself (and, on the
+  // PostToolUse synchronous path, freeze a tool call behind it).
+  const client = new Anthropic({ timeout: 30_000, maxRetries: 1 });
 
   const obsText = observations
     .map((o, i) =>
@@ -149,7 +156,8 @@ async function compressWithOllama(
   return parseResult(data.response);
 }
 
-function parseResult(raw: string): CompressionResult {
+/** Exported for tests: this is the boundary where model output becomes data. */
+export function parseResult(raw: string): CompressionResult {
   const clean = raw.replace(/```json|```/g, "").trim();
   let parsed: { memories?: unknown; summary?: unknown };
   try {
@@ -165,9 +173,38 @@ function parseResult(raw: string): CompressionResult {
     parsed = JSON.parse(clean.slice(start, end + 1));
   }
   return {
-    memories: Array.isArray(parsed.memories) ? (parsed.memories as ExtractedMemory[]) : [],
-    summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    memories: sanitizeMemories(parsed.memories),
+    summary: typeof parsed.summary === "string" ? parsed.summary.slice(0, 2000) : "",
   };
+}
+
+/**
+ * Normalize model-authored memory objects into the shape the DB expects.
+ *
+ * This output used to be cast straight to ExtractedMemory[] and inserted, so a
+ * hallucinated `tier: "important"` was stored verbatim and then never matched
+ * a tier filter again. Enums are coerced to their defaults, text is clamped,
+ * and entries with no usable content are dropped — the memory is worth keeping
+ * even when the labels are wrong, but nothing invalid reaches the table.
+ */
+function sanitizeMemories(raw: unknown): ExtractedMemory[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ExtractedMemory[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const m = item as Record<string, unknown>;
+    const content = typeof m.content === "string" ? clampText(m.content, CONTENT_MAX) : null;
+    if (!content) continue;
+    out.push({
+      tier: coerceTier(m.tier),
+      category: coerceCategory(m.category),
+      content,
+      context: typeof m.context === "string"
+        ? (clampText(m.context, CONTEXT_MAX) ?? undefined)
+        : undefined,
+    });
+  }
+  return out;
 }
 
 export async function compressSession(
@@ -231,84 +268,6 @@ export async function compressSession(
 }
 
 // ── Heuristic classifier for PostToolUse ────────────────────────────────────
-
-export function classifyToolUse(
-  toolName: string,
-  toolInput: unknown,
-  toolResponse: unknown
-): { worth_storing: boolean; category: string; summary: string } | null {
-  const output = JSON.stringify(toolResponse ?? "").toLowerCase();
-  const input = JSON.stringify(toolInput ?? "").toLowerCase();
-
-  // Tool failures — only store actual errors, not exploratory "not found"
-  const isError =
-    output.includes('"error"') ||
-    output.includes('"failed"') ||
-    output.includes("error:") ||
-    output.includes("permission denied") ||
-    output.includes("enoent") ||
-    output.includes("cannot find module");
-
-  // "not found" only counts for write/execute tools, not reads (which are often exploratory)
-  const readTools = ["read", "glob", "grep", "search", "list"];
-  const isReadTool = readTools.some((t) => toolName.toLowerCase().includes(t));
-  const isNotFoundError = output.includes("not found") && !isReadTool;
-
-  if (isError || isNotFoundError) {
-    return {
-      worth_storing: true,
-      category: "correction",
-      summary: `${toolName} failed: ${JSON.stringify(toolResponse)?.slice(0, 300)}`,
-    };
-  }
-
-  // File edits — store as change
-  if (toolName === "Edit" || toolName === "Write") {
-    const filePath = (toolInput as Record<string, unknown>)?.file_path ?? "";
-    return {
-      worth_storing: true,
-      category: "change",
-      summary: `${toolName}: ${String(filePath).slice(-120)}`,
-    };
-  }
-
-  // Test runs — store as pattern
-  const testPatterns = ["jest", "vitest", "pytest", "mocha", "bun test", "npm test", "cargo test", "go test"];
-  if (toolName === "Bash" && testPatterns.some((p) => input.includes(p))) {
-    const passed = output.includes("pass") && !output.includes("fail");
-    return {
-      worth_storing: true,
-      category: "pattern",
-      summary: `Tests ${passed ? "passed" : "failed"}: ${JSON.stringify(toolInput)?.slice(0, 150)}`,
-    };
-  }
-
-  // Dependency installs — store as discovery
-  const installPatterns = ["npm install", "npm add", "bun add", "bun install", "pip install", "cargo add", "go get"];
-  if (toolName === "Bash" && installPatterns.some((p) => input.includes(p))) {
-    return {
-      worth_storing: true,
-      category: "discovery",
-      summary: `Dependency: ${JSON.stringify(toolInput)?.slice(0, 200)}`,
-    };
-  }
-
-  // Config file reads — store as discovery
-  const configPatterns = [
-    "package.json", "tsconfig", ".env", "cargo.toml",
-    "pyproject.toml", "go.mod", "composer.json", "gemfile",
-    ".eslintrc", "vite.config", "next.config", "drizzle.config",
-  ];
-  if (
-    toolName === "Read" &&
-    configPatterns.some((p) => input.includes(p))
-  ) {
-    return {
-      worth_storing: true,
-      category: "discovery",
-      summary: `Read config: ${JSON.stringify(toolInput)?.slice(0, 150)}`,
-    };
-  }
-
-  return null;
-}
+// Moved to classify.ts so hooks can use it without loading the Anthropic SDK.
+// Re-exported here for callers that still import it from compress.js.
+export { classifyToolUse, type ToolUseClassification } from "./classify.js";

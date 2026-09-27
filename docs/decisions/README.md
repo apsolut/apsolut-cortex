@@ -18,3 +18,5 @@ When **not** to write one:
 
 - [001 — libSQL over better-sqlite3](001-libsql-over-better-sqlite3.md)
 - [002 — Async in-session compression via detached workers](002-async-compression.md)
+- [003 — Adopt native async hooks, keep the detached worker](003-native-async-hooks.md)
+- [004 — Hooks are per-project, and hooks buy their imports late](004-project-scoped-hooks.md)

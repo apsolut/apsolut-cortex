@@ -152,3 +152,32 @@ describe("persistRawMessages + captureTranscript", () => {
     db.close();
   });
 });
+
+describe("persistRawMessages — privacy", () => {
+  test("strips <private> blocks before storing raw text", async () => {
+    // This is the one path that stores conversation text verbatim, tool output
+    // included. Observations honoured <private>; raw_messages did not, so a
+    // secret survived in full where memory_recall could read it back.
+    const db = await freshDb();
+    const path = writeTranscript("private", [
+      { role: "user", content: "deploy with <private>TOKEN=abc123</private> now" },
+      { role: "assistant", content: "<private>everything here is secret</private>" },
+      { role: "user", content: "plain message" },
+    ]);
+
+    const inserted = await persistRawMessages(db, "s-1", readTranscript(path));
+    expect(inserted).toBe(2);
+
+    const rows = await db.execute(
+      "SELECT msg_idx, content FROM raw_messages WHERE session_id='s-1' ORDER BY msg_idx"
+    );
+    const contents = rows.rows.map((r) => r.content as string);
+    expect(contents.join("\n")).not.toContain("TOKEN=abc123");
+    expect(contents.join("\n")).not.toContain("everything here is secret");
+    expect(contents[0]).toContain("deploy with");
+    // The fully-private message leaves a gap rather than an empty row.
+    expect(rows.rows.map((r) => r.msg_idx)).toEqual([0, 2]);
+
+    db.close();
+  });
+});

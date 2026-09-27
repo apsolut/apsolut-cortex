@@ -23,6 +23,14 @@ import {
 import { join, resolve, dirname, sep } from "path";
 import { homedir } from "os";
 import { fileURLToPath, pathToFileURL } from "url";
+import {
+  ALL_HOOK_EVENTS,
+  buildHookEntries,
+  findRegisteredHooks,
+  readJsonFile,
+  stripHooks,
+  writeHooks,
+} from "./hook-settings.js";
 import { registerProject } from "./registry.js";
 import { getDb, insertMemory, DB_PATH } from "./db.js";
 import { runMigrations } from "./migrations/runner.js";
@@ -59,67 +67,17 @@ const CLAUDE_SETTINGS = join(homedir(), ".claude", "settings.json");
 const MCP_JSON = join(PROJECT_ROOT, ".mcp.json");
 const PROJECT_APSOLUT = join(PROJECT_ROOT, ".apsolut-cortex");
 const PROJECT_CONFIG = join(PROJECT_APSOLUT, "project.json");
-
-const cmd = process.argv[2];
-
-switch (cmd) {
-  case "init":               await init(); break;
-  case "status":             await status(); break;
-  case "migrate":            await migrate(); break;
-  case "correct":            await correctCmd(process.argv.slice(3)); break;
-  case "export":             await exportCmd(); break;
-  case "promote":            await promoteCmd(process.argv[3]); break;
-  case "demote":             await demoteCmd(process.argv[3]); break;
-  case "tag":                await tagCmd(process.argv[3], process.argv[4]); break;
-  case "untag":              await untagCmd(process.argv[3], process.argv[4]); break;
-  case "grep":               await grepCmd(process.argv.slice(3)); break;
-  case "delete":             await deleteCmd(process.argv.slice(3)); break;
-  case "backup":             await backupCmd(); break;
-  case "restore":            await restoreCmd(process.argv[3], process.argv.slice(4)); break;
-  case "db":                 await dbCmd(process.argv[3], process.argv.slice(4)); break;
-  case "eval":               await evalCmd(process.argv[3]); break;
-  case "uninstall":          uninstall(); break;
-  case "hook:session-start":   await runHook("session-start"); break;
-  case "hook:user-prompt-submit": await runHook("user-prompt-submit"); break;
-  case "hook:post-tool-use":   await runHook("post-tool-use"); break;
-  case "hook:stop":            await runHook("stop"); break;
-  case "hook:session-end":     await runHook("session-end"); break;
-  case "hook:pre-compact":     await runHook("pre-compact"); break;
-  case "hook:compress-worker": await runHook("compress-worker"); break;
-  case "install-hooks":        await installHooksCmd(process.argv.slice(3)); break;
-  case "doctor":               doctor(); break;
-  case "help": case "--help": case "-h":
-  default:
-    console.log(`
-  ┌──────────────────────────────────────────────────┐
-  │                                                  │
-  │       c o r t e x  ·  v ${PKG_VERSION.padEnd(25)}│
-  │                                                  │
-  ├──────────────────────────────────────────────────┤
-  │  Commands:                                       │
-  │    init        Set up memory for a project       │
-  │    status      Show memory stats                 │
-  │    migrate     Apply pending schema migrations   │
-  │    correct     Flag last retrieval as a miss     │
-  │    export      Export memories to Obsidian vault │
-  │    promote     Promote a memory trust tier       │
-  │    demote      Demote a memory trust tier        │
-  │    tag/untag   Add/remove a tag                  │
-  │    grep        Substring search across memories  │
-  │    delete      Single or bulk delete (--id, etc) │
-  │    install-hooks  Wire M6 hooks (PreCompact+)    │
-  │    backup      Snapshot the DB                   │
-  │    restore     Restore a snapshot                │
-  │    db re-encrypt  Migrate DB to encrypted        │
-  │    uninstall   Remove hooks & MCP config         │
-  │    doctor      Diagnose hook/env problems        │
-  │    help        Show this help                    │
-  ├──────────────────────────────────────────────────┤
-  │  DB:     ~/.apsolut-cortex/memory.db             │
-  │  Models: ~/.apsolut-cortex/models/               │
-  └──────────────────────────────────────────────────┘
-`);
-}
+/**
+ * Hooks belong to the project, not the machine. Registered in
+ * ~/.claude/settings.json they fire in *every* project on the box — a
+ * measured ~700 ms of Node startup and module loading per tool call, paid by
+ * repositories that have never heard of cortex. settings.local.json (rather
+ * than settings.json) because the entries reference a locally installed
+ * binary and should not be committed for teammates who don't have it.
+ */
+const PROJECT_CLAUDE_DIR = join(PROJECT_ROOT, ".claude");
+const PROJECT_SETTINGS_LOCAL = join(PROJECT_CLAUDE_DIR, "settings.local.json");
+const PROJECT_SETTINGS = join(PROJECT_CLAUDE_DIR, "settings.json");
 
 // ── Hook dispatcher ───────────────────────────────────────────────────────────
 
@@ -198,50 +156,27 @@ async function init() {
     : `bun run "${join(__dirname, "cli.ts").replace(/\\/g, "/")}"`;
 
 
-  // `async: true` (Claude Code ≥ 2.1.196) keeps capture-only hooks off the
-  // critical path; older versions ignore the field and run them sync as
-  // before. SessionStart and UserPromptSubmit stay sync — they return
-  // context output.
-  const hookEntries: Record<string, { matcher: string; hooks: { type: string; command: string; async?: boolean }[] }[]> = {
-    SessionStart:       [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-start` }] }],
-    UserPromptSubmit:   [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:user-prompt-submit` }] }],
-    PostToolUse:        [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use`, async: true }] }],
-    PostToolUseFailure: [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:post-tool-use`, async: true }] }],
-    Stop:               [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:stop`, async: true }] }],
-    SessionEnd:         [{ matcher: "", hooks: [{ type: "command", command: `${hookCmd} hook:session-end` }] }],
-  };
+  const hookEntries = buildHookEntries(hookCmd);
 
-  let settings: Record<string, unknown> = {};
-  const settingsDir = dirname(CLAUDE_SETTINGS);
-  if (!existsSync(settingsDir)) mkdirSync(settingsDir, { recursive: true });
-  if (existsSync(CLAUDE_SETTINGS)) {
-    try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8")); } catch {}
+  const written = writeHooks(PROJECT_SETTINGS_LOCAL, hookEntries);
+  if (written === null) {
+    console.log(`[apsolut-cortex] ✗ Could not write ${PROJECT_SETTINGS_LOCAL}`);
+    console.log(`[apsolut-cortex]   Hooks are not installed — fix the permissions and re-run init.`);
+    process.exitCode = 1;
+  } else {
+    console.log(`[apsolut-cortex] ✓ Registered ${written} hook events in .claude/settings.local.json`);
   }
 
-  const existingHooks = (settings.hooks as Record<string, unknown[]>) ?? {};
-  let added = 0;
-  for (const [event, entries] of Object.entries(hookEntries)) {
-    const current = (existingHooks[event] ?? []) as unknown[];
-    const alreadyRegistered = current.some((e: any) => {
-      if (typeof e !== "object") return false;
-      // new format: { matcher, hooks: [{ command }] }
-      if (Array.isArray(e.hooks)) {
-        return e.hooks.some((h: any) => h.command?.includes("apsolut-cortex"));
-      }
-      // old format: { command }
-      return e.command?.includes("apsolut-cortex");
-    });
-    if (!alreadyRegistered) {
-      existingHooks[event] = [...current, ...entries];
-      added++;
-    }
+  // Earlier versions registered hooks user-globally, which made every tool
+  // call in every project on the machine run cortex. Remove our own leftovers
+  // (nobody else's) so an upgrade actually fixes it.
+  const strippedGlobal = stripHooks(CLAUDE_SETTINGS);
+  if (strippedGlobal > 0) {
+    console.log(
+      `[apsolut-cortex] ✓ Removed ${strippedGlobal} legacy machine-wide hook entr${strippedGlobal === 1 ? "y" : "ies"} from ~/.claude/settings.json`
+    );
+    console.log(`[apsolut-cortex]   (hooks are per-project now — other projects are no longer affected)`);
   }
-  settings.hooks = existingHooks;
-  writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-  console.log(added > 0
-    ? `[apsolut-cortex] ✓ Registered ${added} hooks in ~/.claude/settings.json`
-    : `[apsolut-cortex] ✓ Hooks already registered`
-  );
 
   // Skills — copy to ~/.claude/skills/ for standalone slash commands
   const SKILL_NAMES = ["apsolut-recall", "apsolut-store", "apsolut-status", "apsolut-forget"];
@@ -329,7 +264,8 @@ async function init() {
   // bash (usr\bin\bash.exe) is missing and every hook no-ops. The failing hook
   // can't report this, so surface it here at install time. Instruct only —
   // never mutate global config.
-  const settingsEnv = (settings.env as Record<string, string> | undefined)?.CLAUDE_CODE_GIT_BASH_PATH;
+  const settingsEnv = (readJsonFile(CLAUDE_SETTINGS).env as Record<string, string> | undefined)
+    ?.CLAUDE_CODE_GIT_BASH_PATH;
   const gitBashWarning = renderGitBashWarning(diagnoseGitBash(gatherGitBashProbe(settingsEnv)), y);
   if (gitBashWarning) {
     console.log(gitBashWarning.split("\n").map((l) => `  ${l}`).join("\n") + "\n");
@@ -339,24 +275,119 @@ async function init() {
 // ── Doctor ──────────────────────────────────────────────────────────────────
 
 /**
- * Diagnose problems that keep hooks from running. Focused on the Windows Git
- * Bash issue for now: a broken hook can't self-report, so a CLI-side check is
- * the only place to catch it.
+ * Diagnose why memory isn't working in this project.
+ *
+ * Everything here is something a broken install cannot report about itself: a
+ * hook that never launches can't say so, and a project without hooks looks
+ * exactly like a quiet one.
  */
-function doctor() {
+async function doctor() {
   const useColor = !process.env.NO_COLOR && process.env.TERM !== "dumb";
   const y = (s: string) => (useColor ? `\x1b[33m${s}\x1b[0m` : s);
   const g = (s: string) => (useColor ? `\x1b[32m${s}\x1b[0m` : s);
+  const r = (s: string) => (useColor ? `\x1b[31m${s}\x1b[0m` : s);
 
   console.log(`\n[apsolut-cortex] doctor · v${PKG_VERSION}\n`);
 
-  let settingsEnv: string | undefined;
-  if (existsSync(CLAUDE_SETTINGS)) {
-    try {
-      const s = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8"));
-      settingsEnv = (s.env as Record<string, string> | undefined)?.CLAUDE_CODE_GIT_BASH_PATH;
-    } catch {}
+  // ── Project ────────────────────────────────────────────────────────────
+  let project: { id: string; name: string } | null = null;
+  if (existsSync(PROJECT_CONFIG)) {
+    try { project = JSON.parse(readFileSync(PROJECT_CONFIG, "utf-8")); } catch {}
   }
+  if (project?.id) {
+    console.log(`${g("✓")} Project initialised: ${project.name} (${project.id.slice(0, 8)}…)`);
+  } else {
+    console.log(`${r("✗")} No .apsolut-cortex/project.json here — run: apsolut-cortex init`);
+    process.exitCode = 1;
+  }
+
+  // ── Hook registration ──────────────────────────────────────────────────
+  const found = findRegisteredHooks([
+    { label: ".claude/settings.local.json", path: PROJECT_SETTINGS_LOCAL },
+    { label: ".claude/settings.json", path: PROJECT_SETTINGS },
+    { label: "~/.claude/settings.json", path: CLAUDE_SETTINGS },
+  ]);
+
+  if (found.length === 0) {
+    console.log(`${r("✗")} No cortex hooks registered — automatic capture is off.`);
+    console.log(`    Fix: apsolut-cortex install-hooks`);
+    process.exitCode = 1;
+  } else {
+    for (const f of found) {
+      console.log(`${g("✓")} Hooks in ${f.label}: ${f.events.join(", ")}`);
+    }
+    const projectScoped = found.some((f) => f.label.startsWith(".claude"));
+    const globalScoped = found.some((f) => f.label.startsWith("~"));
+    if (globalScoped) {
+      console.log(`${y("⚠")} Machine-wide hooks found in ~/.claude/settings.json.`);
+      console.log(`    These run in every project on this machine (a Node process per tool call).`);
+      console.log(`    Fix: apsolut-cortex install-hooks   (re-registers per-project and removes them)`);
+    }
+    if (!projectScoped && !globalScoped) {
+      console.log(`${y("⚠")} Hooks found, but not in a scope this project uses.`);
+    }
+    const missing = ALL_HOOK_EVENTS.filter(
+      (e) => !found.some((f) => f.events.includes(e))
+    );
+    if (missing.length > 0) {
+      console.log(`${y("⚠")} Not registered: ${missing.join(", ")} — run: apsolut-cortex install-hooks`);
+    }
+  }
+
+  // ── MCP server ─────────────────────────────────────────────────────────
+  const mcpServers = readJsonFile(MCP_JSON).mcpServers as Record<string, unknown> | undefined;
+  if (mcpServers?.["apsolut-cortex"]) {
+    console.log(`${g("✓")} MCP server registered in .mcp.json (memory_* tools available)`);
+  } else {
+    console.log(`${y("⚠")} No apsolut-cortex entry in .mcp.json — Claude has no memory_* tools here.`);
+    console.log(`    Fix: apsolut-cortex init`);
+  }
+
+  // ── Database ───────────────────────────────────────────────────────────
+  if (!existsSync(DB_PATH)) {
+    console.log(`${y("⚠")} No database yet at ${DB_PATH} (created on first hook run).`);
+  } else if (project?.id) {
+    try {
+      const db = await getDb();
+      const counts = await db.execute({
+        sql: `SELECT
+                (SELECT COUNT(*) FROM memories WHERE project_id = ?1)    AS memories,
+                (SELECT COUNT(*) FROM observations WHERE project_id = ?1 AND promoted = 0) AS pending,
+                (SELECT COUNT(*) FROM sessions WHERE project_id = ?1)     AS sessions`,
+        args: [project.id],
+      });
+      const row = counts.rows[0] as unknown as { memories: number; pending: number; sessions: number };
+      const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+      console.log(
+        `${g("✓")} Database reachable: ${plural(row.memories, "memory", "memories")}, ` +
+          `${plural(row.sessions, "session", "sessions")}, ` +
+          `${plural(row.pending, "observation", "observations")} awaiting compression`
+      );
+    } catch (e) {
+      console.log(`${r("✗")} Database error: ${e instanceof Error ? e.message : e}`);
+      process.exitCode = 1;
+    }
+  }
+
+  // ── Compression provider ───────────────────────────────────────────────
+  const breaker = getBreakerState();
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log(`${y("⚠")} ANTHROPIC_API_KEY not set in this shell — compression falls back to Ollama.`);
+    console.log(`    Hooks inherit Claude Code's environment, not your shell profile.`);
+  } else {
+    console.log(`${g("✓")} ANTHROPIC_API_KEY present (Haiku compression available)`);
+  }
+  if (breaker.failures > 0) {
+    const mins = Math.round((Date.now() - breaker.lastFailure) / 60000);
+    const open = breaker.failures >= 3 && Date.now() - breaker.lastFailure < 60 * 60 * 1000;
+    console.log(
+      `${open ? r("✗") : y("⚠")} Compression circuit breaker: ${breaker.failures} recent failure(s), last ${mins}m ago${open ? " — currently open, compression is skipped" : ""}`
+    );
+  }
+
+  // ── Windows Git Bash ───────────────────────────────────────────────────
+  const settingsEnv = (readJsonFile(CLAUDE_SETTINGS).env as Record<string, string> | undefined)
+    ?.CLAUDE_CODE_GIT_BASH_PATH;
 
   const diag = diagnoseGitBash(gatherGitBashProbe(settingsEnv));
 
@@ -673,74 +704,64 @@ async function deleteCmd(args: string[]) {
 // ── Install hooks (M6) ────────────────────────────────────────────────────────
 
 /**
- * Wire the M6 hook set (SessionStart + PostToolUse + Stop + SessionEnd +
- * PreCompact) into ~/.claude/settings.json. Opt-in upgrade from the
- * legacy `init`-installed set, which lacks PreCompact and the token-
- * budget trigger.
+ * Re-wire the full hook set. `init` already does this; this command exists to
+ * repair or upgrade an existing install without touching the project row,
+ * .mcp.json or the skills.
  *
- * Idempotent — re-running just normalizes the existing entries to the
- * M6 commands and leaves non-cortex hooks alone.
+ * Project-scoped by default (see PROJECT_SETTINGS_LOCAL). `--global` writes to
+ * ~/.claude/settings.json for the rare case of wanting cortex in every project
+ * on the machine — with the caveat that every tool call everywhere then starts
+ * a Node process.
+ *
+ * Idempotent: prior cortex entries are replaced, other tools' hooks are left
+ * alone.
  */
 async function installHooksCmd(args: string[]) {
-  const template = join(PACKAGE_ROOT, "templates", "hooks-m6.json");
+  const global = args.includes("--global");
 
-  if (!existsSync(template)) {
-    console.log(`[apsolut-cortex] template missing: ${template}`);
+  // In a dev checkout the command is `bun run path/to/cli.ts`, not the global
+  // binary; that works, but it hard-codes this working copy's path.
+  if (!IS_DIST && !args.includes("--force")) {
+    console.log(`[apsolut-cortex] install-hooks is intended for npm-installed users.`);
+    console.log(`[apsolut-cortex] In dev mode, run with --force to wire hooks that point at`);
+    console.log(`[apsolut-cortex] this working copy (${join(__dirname, "cli.ts")}).`);
+    return;
+  }
+
+  const hookCmd = IS_DIST
+    ? "apsolut-cortex"
+    : `bun run "${join(__dirname, "cli.ts").replace(/\\/g, "/")}"`;
+  const target = global ? CLAUDE_SETTINGS : PROJECT_SETTINGS_LOCAL;
+  const entries = buildHookEntries(hookCmd);
+
+  const written = writeHooks(target, entries);
+  if (written === null) {
+    console.log(`[apsolut-cortex] ✗ Could not write ${target}`);
     process.exitCode = 1;
     return;
   }
 
-  const tmpl = JSON.parse(readFileSync(template, "utf-8")) as Record<string, unknown>;
-  const m6Events = [
-    "SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure",
-    "Stop", "SessionEnd", "PreCompact",
-  ];
-
-  // For non-installed (dev) usage, the command is `bun run path/to/cli.ts`
-  // rather than the global binary. install-hooks always assumes the user
-  // installed via npm; warn but proceed in dev mode.
-  if (!IS_DIST && !args.includes("--force")) {
-    console.log(`[apsolut-cortex] install-hooks is intended for npm-installed users.`);
-    console.log(`[apsolut-cortex] In dev mode, run with --force if you really want to wire`);
-    console.log(`[apsolut-cortex] the M6 hook set assuming apsolut-cortex is on PATH.`);
-    return;
+  console.log(`[apsolut-cortex] ✓ Installed hooks into ${target}`);
+  console.log(`[apsolut-cortex]   Events wired: ${Object.keys(entries).join(", ")}`);
+  if (global) {
+    console.log(`[apsolut-cortex]   ⚠ Machine-wide: these hooks now run in every project.`);
+  } else {
+    const strippedGlobal = stripHooks(CLAUDE_SETTINGS);
+    if (strippedGlobal > 0) {
+      console.log(`[apsolut-cortex]   Removed ${strippedGlobal} legacy machine-wide entr${strippedGlobal === 1 ? "y" : "ies"} from ~/.claude/settings.json`);
+    }
   }
-
-  let settings: Record<string, unknown> = {};
-  const settingsDir = dirname(CLAUDE_SETTINGS);
-  if (!existsSync(settingsDir)) mkdirSync(settingsDir, { recursive: true });
-  if (existsSync(CLAUDE_SETTINGS)) {
-    try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8")); } catch {}
-  }
-
-  const existingHooks = (settings.hooks as Record<string, unknown[]>) ?? {};
-
-  for (const event of m6Events) {
-    const tmplEntries = (tmpl[event] as unknown[]) ?? [];
-    const current = (existingHooks[event] ?? []) as unknown[];
-
-    // Strip any prior cortex entry so we don't accumulate duplicates.
-    const otherTools = current.filter((e: any) => {
-      if (typeof e !== "object") return true;
-      if (Array.isArray(e.hooks)) {
-        return !e.hooks.some((h: any) => h.command?.includes("apsolut-cortex"));
-      }
-      return !e.command?.includes("apsolut-cortex");
-    });
-
-    existingHooks[event] = [...otherTools, ...tmplEntries];
-  }
-
-  settings.hooks = existingHooks;
-  writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-  console.log(`[apsolut-cortex] ✓ Installed M6 hooks into ${CLAUDE_SETTINGS}`);
-  console.log(`[apsolut-cortex]   Events wired: ${m6Events.join(", ")}`);
   console.log(`[apsolut-cortex]   Restart any open Claude Code session for the new hooks to apply.`);
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
 async function exportCmd() {
+  if (!existsSync(DB_PATH)) {
+    console.log(`[apsolut-cortex] No database at ${DB_PATH} — nothing to export yet.`);
+    process.exitCode = 1;
+    return;
+  }
   const db = await getDb();
   const result = await exportVault(db);
   console.log(`[apsolut-cortex] ✓ Exported ${result.memories_written} memories to ${result.vault_dir}`);
@@ -753,7 +774,21 @@ async function exportCmd() {
 // ── Backup / Restore ──────────────────────────────────────────────────────────
 
 async function backupCmd() {
-  const dest = snapshot("manual");
+  // snapshot() throws when there is no DB to copy — a raw stack trace is not
+  // a useful answer to "back up my memories".
+  if (!existsSync(DB_PATH)) {
+    console.log(`[apsolut-cortex] No database at ${DB_PATH} — nothing to back up yet.`);
+    process.exitCode = 1;
+    return;
+  }
+  let dest: string;
+  try {
+    dest = snapshot("manual");
+  } catch (e) {
+    console.log(`[apsolut-cortex] ✗ Backup failed: ${e instanceof Error ? e.message : e}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`[apsolut-cortex] ✓ Snapshot written to ${dest}`);
   console.log(`[apsolut-cortex]   (encrypted at rest if key is set in the OS keychain)`);
   const all = listBackups();
@@ -777,16 +812,28 @@ async function restoreCmd(target: string | undefined, args: string[]) {
     console.log(`\n[apsolut-cortex] Restore one with: apsolut-cortex restore <path> --yes`);
     return;
   }
+  if (!existsSync(target)) {
+    console.log(`[apsolut-cortex] Snapshot not found: ${target}`);
+    console.log(`[apsolut-cortex] Run \`apsolut-cortex restore\` with no arguments to list snapshots.`);
+    process.exitCode = 1;
+    return;
+  }
   if (!args.includes("--yes")) {
     console.log(`[apsolut-cortex] Refusing to overwrite ${DB_PATH} without --yes.`);
     console.log(`[apsolut-cortex] A safety snapshot will be taken first if you confirm:`);
     console.log(`    apsolut-cortex restore ${target} --yes`);
     return;
   }
-  const result = restore(target);
-  console.log(`[apsolut-cortex] ✓ Restored ${result.restored} → ${DB_PATH}`);
-  if (result.safetyBackup) {
-    console.log(`[apsolut-cortex]   Pre-restore safety snapshot at ${result.safetyBackup}`);
+  try {
+    const result = restore(target);
+    console.log(`[apsolut-cortex] ✓ Restored ${result.restored} → ${DB_PATH}`);
+    if (result.safetyBackup) {
+      console.log(`[apsolut-cortex]   Pre-restore safety snapshot at ${result.safetyBackup}`);
+    }
+  } catch (e) {
+    console.log(`[apsolut-cortex] ✗ Restore failed: ${e instanceof Error ? e.message : e}`);
+    console.log(`[apsolut-cortex]   ${DB_PATH} was left as it was.`);
+    process.exitCode = 1;
   }
 }
 
@@ -922,30 +969,17 @@ function uninstall() {
     } catch {}
   }
 
-  if (existsSync(CLAUDE_SETTINGS)) {
-    try {
-      const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS, "utf-8"));
-      const hooks = settings.hooks as Record<string, unknown[]> | undefined;
-      if (hooks) {
-        for (const event of ["SessionStart", "PostToolUse", "Stop", "SessionEnd", "PreCompact"]) {
-          if (hooks[event]) {
-            hooks[event] = hooks[event].filter(
-              (e: any) => {
-                if (typeof e !== "object") return true;
-                // new format: { matcher, hooks: [{ command }] }
-                if (Array.isArray(e.hooks)) {
-                  return !e.hooks.some((h: any) => h.command?.includes("apsolut-cortex"));
-                }
-                // old format: { command }
-                return !e.command?.includes("apsolut-cortex");
-              }
-            );
-          }
-        }
-        writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-        console.log("[apsolut-cortex] ✓ Removed hooks from ~/.claude/settings.json");
-      }
-    } catch {}
+  // Clean every scope cortex has ever written to: this project's local and
+  // shared settings, plus the machine-wide file older versions used.
+  for (const [label, path] of [
+    [".claude/settings.local.json", PROJECT_SETTINGS_LOCAL],
+    [".claude/settings.json", PROJECT_SETTINGS],
+    ["~/.claude/settings.json", CLAUDE_SETTINGS],
+  ] as const) {
+    const removed = stripHooks(path);
+    if (removed > 0) {
+      console.log(`[apsolut-cortex] ✓ Removed ${removed} hook entr${removed === 1 ? "y" : "ies"} from ${label}`);
+    }
   }
 
   // Remove standalone skills (both old and new names)

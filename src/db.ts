@@ -1,7 +1,5 @@
-import { createClient, type Client, type Row, type InStatement, type ResultSet } from "@libsql/client";
+import type { Client, Row, InStatement, ResultSet } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
 import {
   CORTEX_DUPLICATE_THRESHOLD,
   CORTEX_BUMP_BOOST,
@@ -18,14 +16,21 @@ import {
 } from "./config.js";
 import { runMigrations } from "./migrations/runner.js";
 import { getDbKey } from "./keyring.js";
+import {
+  clampText,
+  coerceCategory,
+  coerceTier,
+  isTrust,
+  CONTENT_MAX,
+  CONTEXT_MAX,
+} from "./validate.js";
 
 /** Anything with an execute() method — works for both Client and Transaction. */
 export type DbConn = { execute(stmt: InStatement): Promise<ResultSet> };
 
-export const CORTEX_DIR = join(homedir(), ".apsolut-cortex");
-export const DB_PATH = join(CORTEX_DIR, "memory.db");
-export const REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
-export const MODELS_DIR = join(CORTEX_DIR, "models");
+import { CORTEX_DIR, DB_PATH, MODELS_DIR } from "./paths.js";
+// Re-exported for the many callers that have always imported these from db.js.
+export { CORTEX_DIR, DB_PATH, REGISTRY_PATH, MODELS_DIR } from "./paths.js";
 
 let _db: Client | null = null;
 let _initialized = false;
@@ -37,6 +42,12 @@ export async function getDb(): Promise<Client> {
   if (!existsSync(MODELS_DIR)) mkdirSync(MODELS_DIR, { recursive: true });
 
   if (!_db) {
+    // Dynamic import: @libsql/client is ~a third of a hook's startup time and
+    // is only needed once we know we are actually going to open the database.
+    // A static import is hoisted by the runtime and would be paid by every
+    // hook process, including the ones that exit early.
+    const { createClient } = await import("@libsql/client");
+
     // Try the OS keychain for an encryption key. Absent → unencrypted DB
     // (legacy / opt-in mode). Present → pass it to libSQL. If the key is
     // wrong, the FIRST query will throw with SQLITE_NOTADB, which is the
@@ -165,25 +176,25 @@ export interface ProjectRecord {
 
 // ── Project ──────────────────────────────────────────────────────────────────
 
+/**
+ * Single-statement upsert. Check-then-insert raced: SessionStart, the MCP
+ * server and PostToolUse all call this on a cold start, and the loser hit a
+ * PRIMARY KEY violation between the SELECT and the INSERT.
+ */
 export async function upsertProject(
   db: DbConn,
   project: { id: string; name: string; path?: string }
 ): Promise<void> {
-  const existing = await db.execute({
-    sql: "SELECT id FROM projects WHERE id = ?",
-    args: [project.id],
+  const now = Date.now();
+  await db.execute({
+    sql: `INSERT INTO projects (id, name, path, created_at, last_session)
+          VALUES (?1, ?2, ?3, ?4, ?4)
+          ON CONFLICT(id) DO UPDATE SET
+            last_session = ?4,
+            name         = ?2,
+            path         = COALESCE(?3, projects.path)`,
+    args: [project.id, project.name, project.path ?? null, now],
   });
-  if (existing.rows.length > 0) {
-    await db.execute({
-      sql: "UPDATE projects SET last_session = ? WHERE id = ?",
-      args: [Date.now(), project.id],
-    });
-  } else {
-    await db.execute({
-      sql: "INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)",
-      args: [project.id, project.name, project.path ?? null, Date.now()],
-    });
-  }
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
@@ -193,27 +204,24 @@ export async function upsertSession(
   s: { id: string; project_id: string; ended_at?: number; summary?: string;
        memories_stored?: number; tool_failures?: number }
 ): Promise<void> {
-  const existing = await db.execute({
-    sql: "SELECT id FROM sessions WHERE id = ?",
-    args: [s.id],
+  // Numbered parameters so each optional field can be referenced twice: once
+  // for the INSERT, once in the conflict branch. COALESCE keeps "not passed"
+  // (NULL) from clobbering a value another hook already wrote.
+  await db.execute({
+    sql: `INSERT INTO sessions
+            (id, project_id, started_at, ended_at, summary, memories_stored, tool_failures)
+          VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, 0), COALESCE(?7, 0))
+          ON CONFLICT(id) DO UPDATE SET
+            ended_at        = COALESCE(?4, sessions.ended_at),
+            summary         = COALESCE(?5, sessions.summary),
+            memories_stored = COALESCE(?6, sessions.memories_stored),
+            tool_failures   = COALESCE(?7, sessions.tool_failures)`,
+    args: [
+      s.id, s.project_id, Date.now(),
+      s.ended_at ?? null, s.summary ?? null,
+      s.memories_stored ?? null, s.tool_failures ?? null,
+    ],
   });
-  if (existing.rows.length > 0) {
-    const sets: string[] = [];
-    const vals: (string | number | null)[] = [];
-    if (s.ended_at !== undefined) { sets.push("ended_at = ?"); vals.push(s.ended_at); }
-    if (s.summary !== undefined) { sets.push("summary = ?"); vals.push(s.summary); }
-    if (s.memories_stored !== undefined) { sets.push("memories_stored = ?"); vals.push(s.memories_stored); }
-    if (s.tool_failures !== undefined) { sets.push("tool_failures = ?"); vals.push(s.tool_failures); }
-    if (sets.length) {
-      vals.push(s.id);
-      await db.execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args: vals });
-    }
-  } else {
-    await db.execute({
-      sql: "INSERT INTO sessions (id, project_id, started_at) VALUES (?, ?, ?)",
-      args: [s.id, s.project_id, Date.now()],
-    });
-  }
 }
 
 export async function getRecentSummaries(
@@ -356,6 +364,19 @@ export async function insertMemory(
   const srcStart = m.source_start_msg_idx ?? null;
   const srcEnd = m.source_end_msg_idx ?? null;
 
+  // Last line of defense on the value domain. The table has no CHECK
+  // constraints, and two of the three writers are LLMs: compression output
+  // was previously cast straight through, so a hallucinated tier like
+  // "banana" stored fine and then silently missed every tier filter.
+  // Coerce rather than throw — the content is what matters. Strict rejection
+  // with a readable reason happens at the MCP boundary (see validate.ts).
+  const tier = coerceTier(m.tier);
+  const category = coerceCategory(m.category);
+  const trust = isTrust(m.trust) ? m.trust : "observed";
+  const content = clampText(m.content, CONTENT_MAX);
+  if (!content) throw new Error("insertMemory: content is empty");
+  const context = m.context ? clampText(m.context, CONTEXT_MAX) : null;
+
   if (m.embedding) {
     await db.execute({
       sql: `INSERT INTO memories
@@ -365,8 +386,8 @@ export async function insertMemory(
             VALUES
               (?, ?, ?, ?, ?, ?, ?, ?, vector(?), ?, 0, ?, ?, ?, ?, ?)`,
       args: [
-        id, m.project_id, m.tier, m.category, m.trust,
-        m.content, m.context ?? null, m.source,
+        id, m.project_id, tier, category, trust,
+        content, context, m.source,
         vecToSql(m.embedding), m.weight, Date.now(), m.session_id ?? null,
         srcSession, srcStart, srcEnd,
       ],
@@ -380,8 +401,8 @@ export async function insertMemory(
             VALUES
               (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, ?, ?, ?)`,
       args: [
-        id, m.project_id, m.tier, m.category, m.trust,
-        m.content, m.context ?? null, m.source,
+        id, m.project_id, tier, category, trust,
+        content, context, m.source,
         m.weight, Date.now(), m.session_id ?? null,
         srcSession, srcStart, srcEnd,
       ],
@@ -441,12 +462,21 @@ export async function getRawRange(
  */
 export async function getMemoryWithRange(
   db: DbConn,
-  memoryId: string
+  memoryId: string,
+  projectId?: string
 ): Promise<{ memory: Memory; rawMessages: RawMessage[] } | null> {
-  const result = await db.execute({
-    sql: "SELECT * FROM memories WHERE id = ?",
-    args: [memoryId],
-  });
+  // The DB is shared by every project on the machine and memory IDs are
+  // visible (search results, the exported vault, logs). Without the
+  // project_id predicate, any session could pull another project's raw
+  // transcript into its own context.
+  const result = await db.execute(
+    projectId
+      ? {
+          sql: "SELECT * FROM memories WHERE id = ? AND project_id = ?",
+          args: [memoryId, projectId],
+        }
+      : { sql: "SELECT * FROM memories WHERE id = ?", args: [memoryId] }
+  );
   if (result.rows.length === 0) return null;
   const memory = rowToMemory(result.rows[0]);
 
@@ -636,44 +666,102 @@ export function applyMMR(
   return selected;
 }
 
+/**
+ * Apply an EMA rating to a memory's weight and promote observed → validated
+ * when it clears the thresholds.
+ *
+ * One statement, on purpose: the previous read-modify-write lost updates
+ * whenever two processes rated the same memory (the MCP server and a hook
+ * can overlap), and it needed two round-trips. SQLite evaluates every RHS
+ * against the pre-update row, so `weight` and `used_count` below are the old
+ * values even though the same statement assigns them.
+ *
+ * Returns false when no row matched — wrong id, or the memory belongs to
+ * another project.
+ */
 export async function updateWeight(
   db: DbConn,
   id: string,
-  score: 0 | 1 | 2 | 3
-): Promise<void> {
+  score: 0 | 1 | 2 | 3,
+  projectId?: string
+): Promise<boolean> {
   const result = await db.execute({
-    sql: "SELECT weight, used_count FROM memories WHERE id = ?",
-    args: [id],
+    sql: `UPDATE memories
+             SET weight     = ?1 * (?2 / 3.0) + (1 - ?1) * weight,
+                 used_count = used_count + 1,
+                 last_used  = ?3,
+                 trust      = CASE
+                   WHEN trust = 'observed'
+                        AND (?1 * (?2 / 3.0) + (1 - ?1) * weight > ?4
+                             OR used_count + 1 >= ?5)
+                   THEN 'validated' ELSE trust END
+           WHERE id = ?6 AND (?7 IS NULL OR project_id = ?7)`,
+    args: [
+      CORTEX_WEIGHT_ALPHA, score, Date.now(),
+      CORTEX_PROMOTE_WEIGHT, CORTEX_PROMOTE_USES,
+      id, projectId ?? null,
+    ],
   });
-  if (result.rows.length === 0) return;
-  const mem = result.rows[0];
-
-  const alpha = CORTEX_WEIGHT_ALPHA;
-  const oldWeight = mem.weight as number;
-  const usedCount = mem.used_count as number;
-  const newWeight = alpha * (score / 3) + (1 - alpha) * oldWeight;
-
-  const newTrust =
-    newWeight > CORTEX_PROMOTE_WEIGHT || usedCount + 1 >= CORTEX_PROMOTE_USES ? "validated" : undefined;
-
-  if (newTrust) {
-    await db.execute({
-      sql: "UPDATE memories SET weight = ?, used_count = used_count + 1, last_used = ?, trust = CASE WHEN trust = 'observed' THEN ? ELSE trust END WHERE id = ?",
-      args: [newWeight, Date.now(), newTrust, id],
-    });
-  } else {
-    await db.execute({
-      sql: "UPDATE memories SET weight = ?, used_count = used_count + 1, last_used = ? WHERE id = ?",
-      args: [newWeight, Date.now(), id],
-    });
-  }
+  return result.rowsAffected > 0;
 }
 
+/**
+ * Delete a memory (and its tags) within a project. Returns false when
+ * nothing matched, so callers can report "not found" instead of silently
+ * confirming a delete that never happened — or deleting across projects.
+ */
+export async function deleteMemory(
+  db: DbConn,
+  id: string,
+  projectId: string
+): Promise<boolean> {
+  const result = await db.execute({
+    sql: "DELETE FROM memories WHERE id = ? AND project_id = ?",
+    args: [id, projectId],
+  });
+  if (result.rowsAffected === 0) return false;
+  // memory_tags has no FK cascade; clean it up explicitly so a recycled id
+  // can't inherit a dead memory's tags.
+  await db.execute({ sql: "DELETE FROM memory_tags WHERE memory_id = ?", args: [id] });
+  return true;
+}
+
+/**
+ * Enforce raw-transcript retention. raw_messages holds verbatim transcript
+ * text (including tool output) and was documented as retained for
+ * APSOLUT_CORTEX_RAW_RETENTION_DAYS while nothing ever deleted a row.
+ * Age-based and unconditional: a memory whose source window has aged out
+ * still resolves, it just reports the window as pruned.
+ */
+export async function purgeRawMessages(
+  db: DbConn,
+  retentionDays: number
+): Promise<number> {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const result = await db.execute({
+    sql: "DELETE FROM raw_messages WHERE created_at < ?",
+    args: [cutoff],
+  });
+  return result.rowsAffected;
+}
+
+/**
+ * Age out unused memories and prune what falls below the floor.
+ *
+ * The decay multipliers are per-DECAY_DAYS-window, and `last_decay_at`
+ * (migration 006) is what makes that true. Before it, this ran once per
+ * SessionEnd against every memory with `last_used IS NULL` — i.e. every
+ * memory never retrieved — so decay rate scaled with how often you opened
+ * Claude Code. Ten sessions a day took a fresh memory from 1.0 under the
+ * 0.1 prune floor inside a week.
+ */
 export async function decayAndPrune(
   db: DbConn,
   projectId: string
 ): Promise<{ decayed: number; pruned: number }> {
-  const cutoff = Date.now() - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff = now - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
 
   const decayResult = await db.execute({
     sql: `UPDATE memories
@@ -681,11 +769,16 @@ export async function decayAndPrune(
             WHEN trust IN ('proven', 'canonical') THEN 1.0
             WHEN trust = 'validated' THEN ?
             ELSE ?
-          END
+          END,
+          last_decay_at = ?
           WHERE project_id = ?
             AND trust NOT IN ('canonical')
+            AND COALESCE(last_decay_at, created_at) < ?
             AND (last_used IS NULL OR last_used < ?)`,
-    args: [CORTEX_DECAY_VALIDATED, CORTEX_DECAY_OBSERVED, projectId, cutoff],
+    args: [
+      CORTEX_DECAY_VALIDATED, CORTEX_DECAY_OBSERVED, now,
+      projectId, cutoff, cutoff,
+    ],
   });
 
   const pruneResult = await db.execute({

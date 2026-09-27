@@ -1,6 +1,6 @@
 {
   "name": "apsolut-cortex",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Persistent memory for Claude Code projects — stores corrections, decisions, and patterns across sessions",
   "type": "module",
   "bin": {
@@ -9,7 +9,7 @@
   "scripts": {
     "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run typecheck && bun run build",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build",
     "dev": "bun run src/cli.ts",
     "dev:mcp": "bun run src/mcp/server.ts",
     "test": "bun test"
@@ -18,10 +18,7 @@
     "dist/",
     "scripts/",
     "skills/",
-    "hooks/",
-    "templates/",
     "bin/",
-    ".claude-plugin/",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -57,6 +54,16 @@
     "typescript": "^5.0.0"
   },
   "overrides": {
-    "hono": "^4.12.14"
-  }
+    "hono": "^4.13.9",
+    "fast-uri": "^3.1.8",
+    "qs": "^6.15.4",
+    "body-parser": "^2.3.0",
+    "ip-address": "^10.1.1",
+    "@hono/node-server": "^1.19.15",
+    "tar": "^7.5.16",
+    "protobufjs": "^7.5.6",
+    "ws": "^8.20.1",
+    "sharp": "^0.35.0"
+  },
+  "exports": {}
 }

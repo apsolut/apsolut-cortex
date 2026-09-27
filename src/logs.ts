@@ -19,9 +19,17 @@
  * swallowed and logged to stderr — logging must never break retrieval.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+
+/**
+ * Rotate a log once it passes this size, keeping one previous generation
+ * (`<name>.1`). These files grow with every retrieval and were unbounded;
+ * they also hold query text, so keeping them forever is a privacy cost as
+ * well as a disk one.
+ */
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 export const LOGS_DIR = join(homedir(), ".apsolut-cortex", "logs");
 export const RETRIEVALS_PATH = join(LOGS_DIR, "retrievals.jsonl");
@@ -58,10 +66,23 @@ export interface CorrectionEntry {
   correction_text: string | null;
 }
 
+function rotateIfLarge(path: string): void {
+  try {
+    if (!existsSync(path)) return;
+    if (statSync(path).size < MAX_LOG_BYTES) return;
+    const previous = `${path}.1`;
+    if (existsSync(previous)) unlinkSync(previous);
+    renameSync(path, previous);
+  } catch {
+    // Rotation is best-effort; a locked file just keeps growing this round.
+  }
+}
+
 function appendJsonl(path: string, entry: object): void {
   try {
     const dir = dirname(path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    rotateIfLarge(path);
     appendFileSync(path, JSON.stringify(entry) + "\n");
   } catch (e) {
     process.stderr.write(

@@ -7,10 +7,11 @@
  * Input: { session_id, cwd }
  */
 
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 import {
+  CORTEX_DIR,
   getDb,
   upsertSession,
   getSessionObservations,
@@ -22,10 +23,12 @@ import {
   diffFileHashes,
   snapshotFileHashes,
   decayAndPrune,
+  purgeRawMessages,
+  upsertProject,
 } from "../db.js";
 import { compressSession } from "../compress.js";
 import { embed } from "../embed.js";
-import { TRACKED_FILES, CORTEX_CORRECTION_WEIGHT } from "../config.js";
+import { TRACKED_FILES, CORTEX_CORRECTION_WEIGHT, CORTEX_RAW_RETENTION_DAYS } from "../config.js";
 import { exportVault } from "../export.js";
 import { compressSlice } from "../compress-runner.js";
 import {
@@ -67,6 +70,8 @@ async function main() {
 
   try {
     const db = await getDb();
+    // Foreign key on sessions.project_id — see post-tool-use.ts.
+    await upsertProject(db, { id: project.id, name: project.name, path: cwd });
     const currentObs = await getSessionObservations(db, sessionId);
     const staleObs = await getUnprocessedObservations(db, project.id, sessionId);
     const observations = [...currentObs, ...staleObs];
@@ -89,22 +94,27 @@ async function main() {
     let compressionFailed = compression === null;
     const { memories, summary } = compression ?? { memories: [], summary: "" };
 
+    // Embed *before* opening the write transaction. The first embed() call
+    // loads the MiniLM model (seconds on a cold cache); doing that inside the
+    // transaction held a write lock the whole time, so every concurrent hook
+    // and the MCP server queued on SQLITE_BUSY behind model loading.
+    const prepared: Array<{ mem: typeof memories[number]; embedding: Float32Array | null }> = [];
+    for (const mem of memories) {
+      const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
+      let embeddingRaw: Float32Array | null = null;
+      try {
+        embeddingRaw = await embed(textToEmbed);
+      } catch (e) {
+        console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
+      }
+      prepared.push({ mem, embedding: embeddingRaw });
+    }
+
     // Wrap memory storage + observation promotion + session update in a transaction
     const tx = await db.transaction("write");
     try {
       let stored = 0;
-      for (const mem of memories) {
-        const textToEmbed = mem.context
-          ? `${mem.content} ${mem.context}`
-          : mem.content;
-
-        let embeddingRaw: Float32Array | null = null;
-        try {
-          embeddingRaw = await embed(textToEmbed);
-        } catch (e) {
-          console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
-        }
-
+      for (const { mem, embedding: embeddingRaw } of prepared) {
         // Dedup: skip if a very similar memory already exists
         if (embeddingRaw) {
           const dup = await findDuplicate(tx, project.id, embeddingRaw);
@@ -151,6 +161,20 @@ async function main() {
     const { pruned } = await decayAndPrune(db, project.id);
     if (pruned > 0) {
       console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);
+    }
+
+    // Raw-transcript retention. raw_messages holds verbatim conversation text
+    // including tool output; APSOLUT_CORTEX_RAW_RETENTION_DAYS was documented
+    // as a retention window while nothing ever deleted a row.
+    try {
+      const purged = await purgeRawMessages(db, CORTEX_RAW_RETENTION_DAYS);
+      if (purged > 0) {
+        console.error(
+          `[apsolut-cortex] purged ${purged} raw messages older than ${CORTEX_RAW_RETENTION_DAYS}d`
+        );
+      }
+    } catch (e) {
+      console.error(`[apsolut-cortex] raw retention purge skipped: ${e}`);
     }
 
     // ── M6: final transcript capture + compress tail ────────────────────
@@ -201,8 +225,25 @@ async function main() {
     // Auto-export to the Obsidian vault. Wrapped in its own try so a
     // markdown write failure cannot break compression (which is the
     // primary responsibility of this hook).
+    //
+    // Scoped by default: a full export rewrites every memory of every project
+    // on the machine (plus compiled views) on every single session end. The
+    // full pass — which is what refreshes the index, by-category, by-project
+    // and _health pages — runs at most once a day, or on demand via
+    // `apsolut-cortex export`.
     try {
-      await exportVault(db);
+      const fullMarker = join(CORTEX_DIR, "last-full-export");
+      let lastFull = 0;
+      if (existsSync(fullMarker)) {
+        const parsed = Number(readFileSync(fullMarker, "utf-8").trim());
+        if (Number.isFinite(parsed)) lastFull = parsed;
+      }
+      if (Date.now() - lastFull > 24 * 60 * 60 * 1000) {
+        await exportVault(db);
+        try { writeFileSync(fullMarker, String(Date.now())); } catch { /* best-effort */ }
+      } else {
+        await exportVault(db, { projectIdFilter: project.id });
+      }
     } catch (e) {
       console.error(`[apsolut-cortex] export skipped: ${e}`);
     }

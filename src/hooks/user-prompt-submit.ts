@@ -24,10 +24,10 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { getDb, upsertSession, insertObservation, searchBM25, type Memory } from "../db.js";
-import { stripPrivate } from "../privacy.js";
+import type { Memory } from "../db.js";
 import { isPushback, contentTerms } from "../prompt-cues.js";
 import { BUFFER_DIR } from "../buffer.js";
+import { frameMemoryList } from "../framing.js";
 
 const INJECT_LIMIT = 2;
 const INJECT_MIN_WEIGHT = 1.0;
@@ -81,7 +81,12 @@ async function main() {
   if (!project?.id) process.exit(0);
 
   try {
+    // Heavy modules after the project check — see post-tool-use.ts.
+    const [{ getDb, upsertProject, upsertSession, insertObservation, searchBM25 }, { stripPrivate }] =
+      await Promise.all([import("../db.js"), import("../privacy.js")]);
+
     const db = await getDb();
+    await upsertProject(db, { id: project.id, name: project.name, path: cwd });
     await upsertSession(db, { id: sessionId, project_id: project.id });
 
     const terms = contentTerms(promptText);
@@ -126,14 +131,13 @@ async function main() {
     picks.forEach((m) => already.add(m.id));
     writeInjected(sessionId, already);
 
-    const lines = picks.map((m) =>
-      `- [${m.category}] ${m.content}`
-    );
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext:
-          `[apsolut-cortex] Stored memories relevant to this prompt:\n${lines.join("\n")}`,
+        additionalContext: frameMemoryList(
+          picks,
+          "[apsolut-cortex] Stored memories relevant to this prompt:"
+        ),
       },
     }));
     process.exit(0);

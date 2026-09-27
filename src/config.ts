@@ -78,6 +78,16 @@ export const CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
  */
 export const CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
 
+// ── Recall payload budget ───────────────────────────────────────────────────
+
+/**
+ * Token ceiling for a single `memory_recall` response. A source range spans a
+ * whole compression window (CORTEX_OBSERVE_THRESHOLD, 30k tokens by default),
+ * so an uncapped recall could hand back more than the conversation it came
+ * from. Paged: the response carries the offset to continue from.
+ */
+export const CORTEX_RECALL_TOKEN_BUDGET = envNum("APSOLUT_CORTEX_RECALL_TOKEN_BUDGET", 4000);
+
 // ── In-session compression (M6) ─────────────────────────────────────────────
 
 /**

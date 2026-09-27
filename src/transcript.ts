@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "fs";
 import type { DbConn } from "./db.js";
 import { insertRawMessage } from "./db.js";
 import { flattenMessageContent } from "./tokens.js";
+import { stripPrivate } from "./privacy.js";
 
 export interface TranscriptMessage {
   /** Position in the transcript, 0-indexed from the top. Stable per session. */
@@ -83,6 +84,13 @@ export function sliceRange(
  * `now` is injected so all messages from one call share a created_at
  * (matches when *we* observed them, not when Claude Code wrote them —
  * the transcript file does not carry per-message timestamps).
+ *
+ * `<private>…</private>` is honoured here as well as on observations. This is
+ * the one write path that stores conversation text verbatim — tool output
+ * included — so a `<private>` block the user wrote to keep a secret out of
+ * memory used to be stripped from the derived observation and then kept in
+ * full in raw_messages, where memory_recall could read it straight back.
+ * A message that is entirely private is skipped; its index simply has no row.
  */
 export async function persistRawMessages(
   db: DbConn,
@@ -92,11 +100,13 @@ export async function persistRawMessages(
 ): Promise<number> {
   let inserted = 0;
   for (const m of messages) {
+    const content = stripPrivate(m.content);
+    if (content === null) continue;
     await insertRawMessage(db, {
       session_id: sessionId,
       msg_idx: m.msg_idx,
       role: m.role,
-      content: m.content,
+      content,
       created_at: now,
     });
     inserted++;

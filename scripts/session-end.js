@@ -1,13 +1,13 @@
+import { createRequire } from "node:module";
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
+
 // src/hooks/session-end.ts
-import { readFileSync as readFileSync4, existsSync as existsSync6 } from "fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, existsSync as existsSync6 } from "fs";
 import { createHash } from "crypto";
 import { join as join5 } from "path";
 
 // src/db.ts
-import { createClient } from "@libsql/client";
 import { existsSync, mkdirSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
 
 // src/config.ts
 function envNum(key, fallback) {
@@ -34,6 +34,7 @@ var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+var CORTEX_RECALL_TOKEN_BUDGET = envNum("APSOLUT_CORTEX_RECALL_TOKEN_BUDGET", 4000);
 var CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
 var CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
 var CORTEX_REFLECT_THRESHOLD = envNum("APSOLUT_CORTEX_REFLECT_THRESHOLD", 40000);
@@ -263,17 +264,44 @@ var migration5 = {
 };
 var _005_observation_prompt_id_default = migration5;
 
+// src/migrations/006-decay-clock.ts
+var migration6 = {
+  name: "006-decay-clock",
+  async up(client) {
+    const cols = await client.execute("PRAGMA table_info(memories)");
+    const hasColumn = cols.rows.some((r) => r.name === "last_decay_at");
+    if (!hasColumn) {
+      await client.execute("ALTER TABLE memories ADD COLUMN last_decay_at INTEGER");
+    }
+    await client.executeMultiple(`
+      CREATE INDEX IF NOT EXISTS idx_mem_decay
+        ON memories(project_id, last_decay_at);
+
+      CREATE INDEX IF NOT EXISTS idx_raw_created
+        ON raw_messages(created_at);
+    `);
+  }
+};
+var _006_decay_clock_default = migration6;
+
 // src/migrations/runner.ts
 var MIGRATIONS = [
   _001_initial_schema_default,
   _002_range_linked_memories_default,
   _003_raw_messages_default,
   _004_memory_tags_default,
-  _005_observation_prompt_id_default
+  _005_observation_prompt_id_default,
+  _006_decay_clock_default
 ];
 var LOCK_TIMEOUT_MS = 30000;
+var LOCK_WAIT_MS = 5000;
+var LOCK_RETRY_MS = 50;
 async function runMigrations(client, migrations = MIGRATIONS) {
   await ensureMigrationsTable(client);
+  const preApplied = await getAppliedNames(client);
+  if (migrations.every((m) => preApplied.has(m.name))) {
+    return { applied: [], skipped: migrations.map((m) => m.name) };
+  }
   await acquireLock(client);
   try {
     const applied = await getAppliedNames(client);
@@ -319,34 +347,45 @@ async function getAppliedNames(client) {
   return new Set(result.rows.map((r) => r.name));
 }
 async function acquireLock(client) {
-  const now = Date.now();
-  await client.execute({
-    sql: "DELETE FROM _migrations_lock WHERE acquired_at < ?",
-    args: [now - LOCK_TIMEOUT_MS]
-  });
-  try {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let holder = null;
+  for (;; ) {
+    const now = Date.now();
     await client.execute({
-      sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
-      args: [process.pid, now]
+      sql: "DELETE FROM _migrations_lock WHERE acquired_at < ?",
+      args: [now - LOCK_TIMEOUT_MS]
     });
-  } catch {
-    const held = await client.execute("SELECT pid, acquired_at FROM _migrations_lock WHERE id = 1");
-    const row = held.rows[0];
-    throw new Error(`[apsolut-cortex] migration lock held by pid ${row?.pid} since ${new Date(row?.acquired_at).toISOString()}. If this is stale, run: DELETE FROM _migrations_lock;`);
+    try {
+      await client.execute({
+        sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
+        args: [process.pid, now]
+      });
+      return;
+    } catch {
+      const held = await client.execute("SELECT pid, acquired_at FROM _migrations_lock WHERE id = 1");
+      const row = held.rows[0];
+      if (row) {
+        holder = `pid ${row.pid} since ${new Date(Number(row.acquired_at)).toISOString()}`;
+      }
+      if (Date.now() >= deadline)
+        break;
+      await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
+    }
   }
+  throw new Error(`[apsolut-cortex] migration lock still held after ${LOCK_WAIT_MS}ms` + `${holder ? ` (${holder})` : ""}. If this is stale, run: DELETE FROM _migrations_lock;`);
 }
 async function releaseLock(client) {
   await client.execute("DELETE FROM _migrations_lock WHERE id = 1");
 }
 
 // src/keyring.ts
-import { createRequire } from "module";
+import { createRequire as createRequire2 } from "module";
 var KEYRING_SERVICE = "apsolut-cortex";
 var KEYRING_ACCOUNT_DB_KEY = "db-encryption-key";
 var _EntryCtor = null;
 var _loadError = null;
 try {
-  const require2 = createRequire(import.meta.url);
+  const require2 = createRequire2(import.meta.url);
   _EntryCtor = require2("@napi-rs/keyring").Entry;
 } catch (e) {
   _loadError = e;
@@ -366,11 +405,66 @@ function getDbKey(service = KEYRING_SERVICE, account = KEYRING_ACCOUNT_DB_KEY) {
   }
 }
 
-// src/db.ts
+// src/validate.ts
+var MEMORY_TIERS = [
+  "episodic",
+  "semantic",
+  "procedural",
+  "strategic",
+  "meta"
+];
+var MEMORY_CATEGORIES = [
+  "correction",
+  "insight",
+  "decision",
+  "discovery",
+  "fact",
+  "pattern"
+];
+var TRUST_LEVELS = [
+  "observed",
+  "validated",
+  "proven",
+  "canonical"
+];
+var CONTENT_MAX = 4000;
+var CONTEXT_MAX = 2000;
+function isTier(v) {
+  return typeof v === "string" && MEMORY_TIERS.includes(v);
+}
+function isCategory(v) {
+  return typeof v === "string" && MEMORY_CATEGORIES.includes(v);
+}
+function isTrust(v) {
+  return typeof v === "string" && TRUST_LEVELS.includes(v);
+}
+function coerceTier(v, fallback = "semantic") {
+  return isTier(v) ? v : fallback;
+}
+function coerceCategory(v, fallback = "insight") {
+  return isCategory(v) ? v : fallback;
+}
+function clampText(text, max) {
+  const trimmed = text.trim();
+  if (trimmed.length === 0)
+    return null;
+  if (trimmed.length <= max)
+    return trimmed;
+  const cut = trimmed.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  const body = lastSpace > max * 0.8 ? cut.slice(0, lastSpace) : cut;
+  return `${body} […truncated]`;
+}
+
+// src/paths.ts
+import { homedir } from "os";
+import { join } from "path";
 var CORTEX_DIR = join(homedir(), ".apsolut-cortex");
 var DB_PATH = join(CORTEX_DIR, "memory.db");
 var REGISTRY_PATH = join(CORTEX_DIR, "registry.json");
 var MODELS_DIR = join(CORTEX_DIR, "models");
+
+// src/db.ts
 var _db = null;
 var _initialized = false;
 async function getDb() {
@@ -381,6 +475,7 @@ async function getDb() {
   if (!existsSync(MODELS_DIR))
     mkdirSync(MODELS_DIR, { recursive: true });
   if (!_db) {
+    const { createClient } = await import("@libsql/client");
     let key = null;
     try {
       key = getDbKey();
@@ -403,40 +498,38 @@ async function getDb() {
 function vecToSql(arr) {
   return JSON.stringify(Array.from(arr));
 }
-async function upsertSession(db, s) {
-  const existing = await db.execute({
-    sql: "SELECT id FROM sessions WHERE id = ?",
-    args: [s.id]
+async function upsertProject(db, project) {
+  const now = Date.now();
+  await db.execute({
+    sql: `INSERT INTO projects (id, name, path, created_at, last_session)
+          VALUES (?1, ?2, ?3, ?4, ?4)
+          ON CONFLICT(id) DO UPDATE SET
+            last_session = ?4,
+            name         = ?2,
+            path         = COALESCE(?3, projects.path)`,
+    args: [project.id, project.name, project.path ?? null, now]
   });
-  if (existing.rows.length > 0) {
-    const sets = [];
-    const vals = [];
-    if (s.ended_at !== undefined) {
-      sets.push("ended_at = ?");
-      vals.push(s.ended_at);
-    }
-    if (s.summary !== undefined) {
-      sets.push("summary = ?");
-      vals.push(s.summary);
-    }
-    if (s.memories_stored !== undefined) {
-      sets.push("memories_stored = ?");
-      vals.push(s.memories_stored);
-    }
-    if (s.tool_failures !== undefined) {
-      sets.push("tool_failures = ?");
-      vals.push(s.tool_failures);
-    }
-    if (sets.length) {
-      vals.push(s.id);
-      await db.execute({ sql: `UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, args: vals });
-    }
-  } else {
-    await db.execute({
-      sql: "INSERT INTO sessions (id, project_id, started_at) VALUES (?, ?, ?)",
-      args: [s.id, s.project_id, Date.now()]
-    });
-  }
+}
+async function upsertSession(db, s) {
+  await db.execute({
+    sql: `INSERT INTO sessions
+            (id, project_id, started_at, ended_at, summary, memories_stored, tool_failures)
+          VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, 0), COALESCE(?7, 0))
+          ON CONFLICT(id) DO UPDATE SET
+            ended_at        = COALESCE(?4, sessions.ended_at),
+            summary         = COALESCE(?5, sessions.summary),
+            memories_stored = COALESCE(?6, sessions.memories_stored),
+            tool_failures   = COALESCE(?7, sessions.tool_failures)`,
+    args: [
+      s.id,
+      s.project_id,
+      Date.now(),
+      s.ended_at ?? null,
+      s.summary ?? null,
+      s.memories_stored ?? null,
+      s.tool_failures ?? null
+    ]
+  });
 }
 async function getSessionObservations(db, sessionId) {
   const result = await db.execute({
@@ -496,6 +589,13 @@ async function insertMemory(db, m) {
   const srcSession = m.source_session_id ?? null;
   const srcStart = m.source_start_msg_idx ?? null;
   const srcEnd = m.source_end_msg_idx ?? null;
+  const tier = coerceTier(m.tier);
+  const category = coerceCategory(m.category);
+  const trust = isTrust(m.trust) ? m.trust : "observed";
+  const content = clampText(m.content, CONTENT_MAX);
+  if (!content)
+    throw new Error("insertMemory: content is empty");
+  const context = m.context ? clampText(m.context, CONTEXT_MAX) : null;
   if (m.embedding) {
     await db.execute({
       sql: `INSERT INTO memories
@@ -507,11 +607,11 @@ async function insertMemory(db, m) {
       args: [
         id,
         m.project_id,
-        m.tier,
-        m.category,
-        m.trust,
-        m.content,
-        m.context ?? null,
+        tier,
+        category,
+        trust,
+        content,
+        context,
         m.source,
         vecToSql(m.embedding),
         m.weight,
@@ -533,11 +633,11 @@ async function insertMemory(db, m) {
       args: [
         id,
         m.project_id,
-        m.tier,
-        m.category,
-        m.trust,
-        m.content,
-        m.context ?? null,
+        tier,
+        category,
+        trust,
+        content,
+        context,
         m.source,
         m.weight,
         Date.now(),
@@ -598,19 +698,39 @@ var GREP_STOP_WORDS = new Set([
   "with",
   "you"
 ]);
+async function purgeRawMessages(db, retentionDays) {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0)
+    return 0;
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const result = await db.execute({
+    sql: "DELETE FROM raw_messages WHERE created_at < ?",
+    args: [cutoff]
+  });
+  return result.rowsAffected;
+}
 async function decayAndPrune(db, projectId) {
-  const cutoff = Date.now() - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff = now - CORTEX_DECAY_DAYS * 24 * 60 * 60 * 1000;
   const decayResult = await db.execute({
     sql: `UPDATE memories
           SET weight = weight * CASE
             WHEN trust IN ('proven', 'canonical') THEN 1.0
             WHEN trust = 'validated' THEN ?
             ELSE ?
-          END
+          END,
+          last_decay_at = ?
           WHERE project_id = ?
             AND trust NOT IN ('canonical')
+            AND COALESCE(last_decay_at, created_at) < ?
             AND (last_used IS NULL OR last_used < ?)`,
-    args: [CORTEX_DECAY_VALIDATED, CORTEX_DECAY_OBSERVED, projectId, cutoff]
+    args: [
+      CORTEX_DECAY_VALIDATED,
+      CORTEX_DECAY_OBSERVED,
+      now,
+      projectId,
+      cutoff,
+      cutoff
+    ]
   });
   const pruneResult = await db.execute({
     sql: `DELETE FROM memories
@@ -646,7 +766,6 @@ async function diffFileHashes(db, projectId, currentHashes) {
 }
 
 // src/compress.ts
-import Anthropic from "@anthropic-ai/sdk";
 import { existsSync as existsSync2, readFileSync, writeFileSync, renameSync } from "fs";
 import { join as join2 } from "path";
 import { homedir as homedir2 } from "os";
@@ -709,7 +828,8 @@ Rules:
 - If nothing worth preserving happened, return {"memories":[],"summary":"Short session with no significant findings."}
 - Return ONLY the JSON object, no markdown, no preamble`;
 async function compressWithAnthropic(observations, project) {
-  const client = new Anthropic;
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  const client = new Anthropic({ timeout: 30000, maxRetries: 1 });
   const obsText = observations.map((o, i) => `[${i + 1}]${o.tool_name ? ` Tool: ${o.tool_name}` : ""}
 ${o.content}`).join(`
 
@@ -781,9 +901,29 @@ function parseResult(raw) {
     parsed = JSON.parse(clean.slice(start, end + 1));
   }
   return {
-    memories: Array.isArray(parsed.memories) ? parsed.memories : [],
-    summary: typeof parsed.summary === "string" ? parsed.summary : ""
+    memories: sanitizeMemories(parsed.memories),
+    summary: typeof parsed.summary === "string" ? parsed.summary.slice(0, 2000) : ""
   };
+}
+function sanitizeMemories(raw) {
+  if (!Array.isArray(raw))
+    return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object")
+      continue;
+    const m = item;
+    const content = typeof m.content === "string" ? clampText(m.content, CONTENT_MAX) : null;
+    if (!content)
+      continue;
+    out.push({
+      tier: coerceTier(m.tier),
+      category: coerceCategory(m.category),
+      content,
+      context: typeof m.context === "string" ? clampText(m.context, CONTEXT_MAX) ?? undefined : undefined
+    });
+  }
+  return out;
 }
 async function compressSession(observations, project) {
   if (observations.length === 0) {
@@ -835,13 +975,13 @@ async function compressSession(observations, project) {
 }
 
 // src/embed.ts
-import { pipeline, env } from "@huggingface/transformers";
-env.cacheDir = MODELS_DIR;
-env.allowRemoteModels = true;
 var _embedder = null;
 async function getEmbedder() {
   if (_embedder)
     return _embedder;
+  const { pipeline, env } = await import("@huggingface/transformers");
+  env.cacheDir = MODELS_DIR;
+  env.allowRemoteModels = true;
   _embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
   return _embedder;
 }
@@ -1180,7 +1320,9 @@ async function exportVault(db, opts = {}) {
     }
     writeFileSync2(join3(vaultDir, "_health.md"), healthPage(memories, (id) => projectName.get(id) ?? "unknown"));
   }
-  writeFileSync2(indexPath, indexFile(byProject));
+  if (!projectIdFilter) {
+    writeFileSync2(indexPath, indexFile(byProject));
+  }
   return {
     memories_written: memories.length,
     files_removed: removed,
@@ -1273,17 +1415,33 @@ function releaseLock2(sessionId) {
 function clearAllForSession(sessionId) {
   releaseLock2(sessionId);
   clearCursor(sessionId);
+  for (const suffix of [".scan", ".injected.json"]) {
+    const path = join4(BUFFER_DIR, `${sessionId}${suffix}`);
+    if (existsSync4(path)) {
+      try {
+        unlinkSync2(path);
+      } catch {}
+    }
+  }
 }
 
 // src/transcript.ts
 import { existsSync as existsSync5, readFileSync as readFileSync3 } from "fs";
 
 // src/tokens.ts
-import { encode } from "gpt-tokenizer";
+import { createRequire as createRequire3 } from "module";
+var _encode = null;
+function getEncoder() {
+  if (_encode)
+    return _encode;
+  const require2 = createRequire3(import.meta.url);
+  _encode = require2("gpt-tokenizer").encode;
+  return _encode;
+}
 function countTokens(text) {
   if (!text)
     return 0;
-  return encode(text).length;
+  return getEncoder()(text).length;
 }
 function flattenMessageContent(msg) {
   if (!msg || typeof msg !== "object")
@@ -1318,6 +1476,20 @@ function flattenMessageContent(msg) {
   }
   return parts.join(`
 `);
+}
+
+// src/privacy.ts
+function stripPrivate(text) {
+  let result = text;
+  let start;
+  while ((start = result.toLowerCase().indexOf("<private>")) !== -1) {
+    const end = result.toLowerCase().indexOf("</private>", start);
+    if (end === -1)
+      break;
+    result = result.slice(0, start) + result.slice(end + "</private>".length);
+  }
+  const stripped = result.trim();
+  return stripped.length > 0 ? stripped : null;
 }
 
 // src/transcript.ts
@@ -1361,11 +1533,14 @@ function sliceRange(transcript, startIdx, endIdx) {
 async function persistRawMessages(db, sessionId, messages, now = Date.now()) {
   let inserted = 0;
   for (const m of messages) {
+    const content = stripPrivate(m.content);
+    if (content === null)
+      continue;
     await insertRawMessage(db, {
       session_id: sessionId,
       msg_idx: m.msg_idx,
       role: m.role,
-      content: m.content,
+      content,
       created_at: now
     });
     inserted++;
@@ -1583,6 +1758,7 @@ async function main() {
     process.exit(0);
   try {
     const db = await getDb();
+    await upsertProject(db, { id: project.id, name: project.name, path: cwd });
     const currentObs = await getSessionObservations(db, sessionId);
     const staleObs = await getUnprocessedObservations(db, project.id, sessionId);
     const observations = [...currentObs, ...staleObs];
@@ -1594,17 +1770,21 @@ async function main() {
     const compression = await compressSession(observations, projectContext);
     let compressionFailed = compression === null;
     const { memories, summary } = compression ?? { memories: [], summary: "" };
+    const prepared = [];
+    for (const mem of memories) {
+      const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
+      let embeddingRaw = null;
+      try {
+        embeddingRaw = await embed(textToEmbed);
+      } catch (e) {
+        console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
+      }
+      prepared.push({ mem, embedding: embeddingRaw });
+    }
     const tx = await db.transaction("write");
     try {
       let stored = 0;
-      for (const mem of memories) {
-        const textToEmbed = mem.context ? `${mem.content} ${mem.context}` : mem.content;
-        let embeddingRaw = null;
-        try {
-          embeddingRaw = await embed(textToEmbed);
-        } catch (e) {
-          console.error(`[apsolut-cortex] embedding failed for memory: ${e}`);
-        }
+      for (const { mem, embedding: embeddingRaw } of prepared) {
         if (embeddingRaw) {
           const dup = await findDuplicate(tx, project.id, embeddingRaw);
           if (dup) {
@@ -1645,6 +1825,14 @@ async function main() {
     if (pruned > 0) {
       console.error(`[apsolut-cortex] pruned ${pruned} stale memories`);
     }
+    try {
+      const purged = await purgeRawMessages(db, CORTEX_RAW_RETENTION_DAYS);
+      if (purged > 0) {
+        console.error(`[apsolut-cortex] purged ${purged} raw messages older than ${CORTEX_RAW_RETENTION_DAYS}d`);
+      }
+    } catch (e) {
+      console.error(`[apsolut-cortex] raw retention purge skipped: ${e}`);
+    }
     if (transcriptPath) {
       const got = tryAcquireLock(sessionId);
       try {
@@ -1680,7 +1868,21 @@ async function main() {
       console.error(`[apsolut-cortex] reflector skipped: ${e}`);
     }
     try {
-      await exportVault(db);
+      const fullMarker = join5(CORTEX_DIR, "last-full-export");
+      let lastFull = 0;
+      if (existsSync6(fullMarker)) {
+        const parsed = Number(readFileSync4(fullMarker, "utf-8").trim());
+        if (Number.isFinite(parsed))
+          lastFull = parsed;
+      }
+      if (Date.now() - lastFull > 24 * 60 * 60 * 1000) {
+        await exportVault(db);
+        try {
+          writeFileSync4(fullMarker, String(Date.now()));
+        } catch {}
+      } else {
+        await exportVault(db, { projectIdFilter: project.id });
+      }
     } catch (e) {
       console.error(`[apsolut-cortex] export skipped: ${e}`);
     }

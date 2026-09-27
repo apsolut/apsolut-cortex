@@ -112,6 +112,30 @@ export function clearCursor(sessionId: string): void {
   }
 }
 
+// ── Stop-hook scan cursor ────────────────────────────────────────────────────
+
+/**
+ * How many transcript messages the Stop hook has already scanned for
+ * self-corrections. Stop fires on every turn and the transcript only grows,
+ * so without this the whole conversation is re-read and re-regexed each turn —
+ * O(turns²) work per session, and the dedup query had to catch every repeat.
+ */
+export function readScanCursor(sessionId: string): number {
+  const path = join(BUFFER_DIR, `${sessionId}.scan`);
+  if (!existsSync(path)) return 0;
+  try {
+    const n = parseInt(readFileSync(path, "utf-8").trim(), 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch { return 0; }
+}
+
+export function writeScanCursor(sessionId: string, msgCount: number): void {
+  ensureDir();
+  try {
+    writeFileSync(join(BUFFER_DIR, `${sessionId}.scan`), String(msgCount));
+  } catch { /* best-effort — worst case we rescan next turn */ }
+}
+
 // ── Single-flight lock ───────────────────────────────────────────────────────
 
 /**
@@ -163,6 +187,15 @@ export function releaseLock(sessionId: string): void {
 export function clearAllForSession(sessionId: string): void {
   releaseLock(sessionId);
   clearCursor(sessionId);
+  // Per-session side files: Stop's scan cursor and UserPromptSubmit's
+  // already-injected id set. Left behind, these accumulate one pair per
+  // session forever in ~/.apsolut-cortex/buffer/.
+  for (const suffix of [".scan", ".injected.json"]) {
+    const path = join(BUFFER_DIR, `${sessionId}${suffix}`);
+    if (existsSync(path)) {
+      try { unlinkSync(path); } catch { /* best-effort */ }
+    }
+  }
 }
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────

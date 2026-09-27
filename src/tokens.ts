@@ -7,11 +7,23 @@
  */
 
 import { readFileSync } from "fs";
-import { encode } from "gpt-tokenizer";
+import { createRequire } from "module";
+
+// Loaded on first count, through createRequire so the (sizeable) tokenizer
+// tables stay out of the startup path of every hook that never counts
+// anything. A static ESM import would be hoisted and always paid.
+let _encode: ((text: string) => number[]) | null = null;
+
+function getEncoder(): (text: string) => number[] {
+  if (_encode) return _encode;
+  const require = createRequire(import.meta.url);
+  _encode = (require("gpt-tokenizer") as { encode: (t: string) => number[] }).encode;
+  return _encode;
+}
 
 export function countTokens(text: string): number {
   if (!text) return 0;
-  return encode(text).length;
+  return getEncoder()(text).length;
 }
 
 /**

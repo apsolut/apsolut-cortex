@@ -16,8 +16,8 @@
 import { readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
-import { getDb, upsertProject, upsertSession, snapshotFileHashes } from "../db.js";
 import { TRACKED_FILES } from "../config.js";
+import { frameMemoryList } from "../framing.js";
 
 function hashFile(path: string): string | null {
   try {
@@ -59,10 +59,6 @@ function wrap(text: string, max: number, limit = 3): string[] {
   return lines.length > limit ? [...lines.slice(0, limit), "..."] : lines;
 }
 
-function truncate(text: string, max: number): string {
-  return text.length > max ? text.slice(0, max - 3) + "..." : text;
-}
-
 async function main() {
   const raw = await new Promise<string>((resolve) => {
     let d = ""; process.stdin.setEncoding("utf-8");
@@ -85,6 +81,9 @@ async function main() {
   if (!project?.id) process.exit(0);
 
   try {
+    // Deferred so a project without cortex (the early exit above) never pays
+    // for the libSQL client.
+    const { getDb, upsertProject, upsertSession, snapshotFileHashes } = await import("../db.js");
     const db = await getDb();
     await upsertProject(db, { id: project.id, name: project.name, path: cwd });
     await upsertSession(db, { id: sessionId, project_id: project.id });
@@ -103,12 +102,13 @@ async function main() {
       });
       const mems = memResult.rows as unknown as Array<{ content: string; category: string }>;
       if (mems.length > 0) {
-        const lines = mems.map((m) => `- [${m.category}] ${m.content}`);
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "SessionStart",
-            additionalContext:
-              `[apsolut-cortex] Context was compacted. Re-injecting persistent memories:\n${lines.join("\n")}`,
+            additionalContext: frameMemoryList(
+              mems,
+              "[apsolut-cortex] Context was compacted. Re-injecting persistent memories:"
+            ),
           },
         }));
       }
@@ -194,7 +194,13 @@ async function main() {
         out.push(sep());
       }
 
-      // Key memories — token-budgeted (2000 tokens ~ 8000 chars)
+      // Key memories — token-budgeted (2000 tokens ~ 8000 chars).
+      // Emitted as plain markdown *after* the box rather than inside it: a
+      // 60-column box clipped every memory to ~52 characters
+      // ("Never add Co-Authored-By lines (or any AI attribu…"), which is
+      // exactly long enough to look informative and too short to be usable.
+      // The budget is now charged for what is actually printed, not for the
+      // untruncated length.
       const TOKEN_BUDGET = 2000;
       const CHARS_PER_TOKEN = 4;
       let budgetRemaining = TOKEN_BUDGET * CHARS_PER_TOKEN;
@@ -213,19 +219,15 @@ async function main() {
       });
       const memories = memoriesResult.rows as unknown as Array<{ content: string; category: string }>;
 
-      if (memories.length > 0) {
-        out.push(ln("Key memories:"));
-        out.push(em());
-        for (const m of memories) {
-          if (budgetRemaining <= 0) break;
-          const icon = m.category === "correction" ? "!" :
-                       m.category === "decision"   ? ">" :
-                       m.category === "pattern"    ? "~" : "-";
-          const maxLen = Math.min(W - 8, budgetRemaining);
-          const text = truncate(m.content, maxLen);
-          out.push(ln(`  ${icon} ${text}`));
-          budgetRemaining -= m.content.length;
-        }
+      const shown: Array<{ content: string; category: string }> = [];
+      for (const m of memories) {
+        const line = `- [${m.category}] ${m.content}`;
+        if (shown.length > 0 && line.length > budgetRemaining) break;
+        shown.push(m);
+        budgetRemaining -= line.length;
+      }
+      if (shown.length > 0) {
+        out.push(ln(`Key memories: ${shown.length} (listed below)`));
         out.push(sep());
       }
 
@@ -233,6 +235,11 @@ async function main() {
       out.push(ln(`${memCount} memories | ${sessionCount} sessions`));
       out.push(ln(`Say "/apsolut-recall <topic>" to search memory`));
       out.push(bot());
+
+      if (shown.length > 0) {
+        out.push("");
+        out.push(frameMemoryList(shown, "[apsolut-cortex] Key memories for this project:"));
+      }
     }
 
     process.stdout.write(out.join("\n"));

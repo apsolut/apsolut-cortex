@@ -67,8 +67,11 @@ Restart Claude Code. Done.
 
 - **Node.js ≥ 20**
 - **A compression provider** — set `ANTHROPIC_API_KEY`, or run [Ollama](#compression-providers)
-  locally. Without one, cortex captures observations but fails loudly at session
-  end instead of silently losing them.
+  locally. Without one, cortex keeps captured observations for the next session and
+  reports the failure in-session (a hook `systemMessage` at session end, plus
+  breaker state in `apsolut-cortex status` / `doctor`); nothing is silently lost.
+  Note hooks inherit Claude Code's environment, not your shell profile — a key
+  exported in `.zshrc` may not reach them.
 - **On Windows**, hooks run through Git Bash. Slim/MinGit installs need one extra
   setting — see [Troubleshooting](#troubleshooting) (or just run
   `apsolut-cortex doctor`).
@@ -133,7 +136,7 @@ flagged. See [Project status](#project-status) for the honest caveats.
 | Capability | Status |
 |---|---|
 | **Encryption at rest** | libSQL-native encryption via `db re-encrypt`, key stored in the OS keychain. Opt-in; default is plaintext. Works on Windows & macOS; **not supported on native Linux**. **Key loss = data loss** — always `backup` first. |
-| **In-session compression** | Token-budget background worker + `PreCompact` safety capture, wired via `install-hooks`. Compresses mid-session without blocking tool execution. New; smoke-tested on limited hardware. |
+| **In-session compression** | Token-budget background worker + `PreCompact` safety capture. Compresses mid-session without blocking tool execution. Smoke-tested on limited hardware. |
 
 ### 🔜 Planned
 
@@ -146,7 +149,18 @@ flagged. See [Project status](#project-status) for the honest caveats.
 
 ## How it works
 
-Everything is automatic. Hooks fire across the Claude Code session lifecycle:
+Everything is automatic. Hooks are registered **per project**, in
+`.claude/settings.local.json` — they never fire in projects you haven't run
+`init` in. Each hook exits before loading its database client when the project
+has no `.apsolut-cortex/project.json`, so an uninitialised repository pays only
+Node's startup.
+
+Memories injected into context — at session start, per prompt, and after
+compaction — are framed as data and quoted. Memory text is written by past
+sessions and by the compressor, so an instruction stored inside a memory is
+never presented to Claude as a live directive.
+
+Hooks fire across the Claude Code session lifecycle:
 
 **Session start**
 - Last session summary injected
@@ -169,7 +183,7 @@ Everything is automatic. Hooks fire across the Claude Code session lifecycle:
 - Stale memories decay; low-value ones are pruned over time
 - Vault auto-exported to `~/.apsolut-cortex/obsidian/`
 
-**In-session** *(opt-in via `apsolut-cortex install-hooks`)*
+**In-session** *(wired by `init`; `install-hooks` re-wires an existing install)*
 - Token budget exceeded → detached background worker compresses mid-session, never blocking tool execution
 - `PreCompact` event → safety capture before Claude Code compacts its own context; runs in the background (`asyncRewake`) on Claude Code ≥ 2.1.196 and wakes Claude if the capture fails
 - After compaction → `SessionStart` re-fires with `source: "compact"` and cortex re-injects the top corrections/decisions, so the post-compaction context isn't memory-blind
@@ -187,7 +201,7 @@ Tools Claude can call directly during a session:
 | `memory_rate(id, score)` | After using a retrieved memory (0–3) |
 | `memory_contradict(id, correction?)` | When a memory is wrong |
 | `memory_status()` | Overview of what's stored |
-| `memory_recall(id)` | Need the exact wording / chronology a memory was derived from |
+| `memory_recall(id, offset?)` | Need the exact wording / chronology a memory was derived from (capped at ~4k tokens; `offset` resumes) |
 
 ---
 
@@ -195,9 +209,9 @@ Tools Claude can call directly during a session:
 
 **Setup**
 ```bash
-apsolut-cortex init             # set up memory for this project (legacy hook set)
-apsolut-cortex install-hooks    # opt in to in-session compression (PreCompact + token-budget worker)
-apsolut-cortex doctor           # diagnose why hooks aren't firing (Windows Git Bash, env, etc.)
+apsolut-cortex init             # set up memory for this project (full hook set, project-scoped)
+apsolut-cortex install-hooks    # re-wire or repair the hook set (--global for machine-wide)
+apsolut-cortex doctor           # check project, hooks, MCP, DB, provider, Windows Git Bash
 apsolut-cortex uninstall        # remove hooks and MCP config (DB kept)
 ```
 
@@ -244,8 +258,11 @@ apsolut-cortex eval baseline            # snapshot scores for delta tracking
 
 ## Compression providers
 
-Set one of these, or cortex will fail loudly at session end (observations are
-kept and retried next session — nothing is lost):
+Set one of these. Without a reachable provider, session-end compression reports
+the failure through a hook `systemMessage` and keeps the observations for the next
+session — nothing is lost, but no memories are extracted either. After three
+consecutive failures a circuit breaker pauses attempts for an hour;
+`apsolut-cortex status` and `apsolut-cortex doctor` both show its state:
 
 **Option 1 — Anthropic API**
 ```bash
@@ -272,7 +289,7 @@ people never set one. The five most commonly tweaked:
 |---|---|---|
 | `ANTHROPIC_API_KEY` | _(unset)_ | Required for primary compression (Haiku). Without it, falls back to Ollama. |
 | `APSOLUT_CORTEX_OBSERVE_THRESHOLD` | `30000` | Conversation tokens that fire mid-session compression. |
-| `APSOLUT_CORTEX_DECAY_DAYS` | `7` | Days unused before a memory's weight starts decaying. |
+| `APSOLUT_CORTEX_DECAY_DAYS` | `7` | Days unused before a memory's weight starts decaying, and the length of one decay window (decay applies at most once per window, per memory). |
 | `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` | `0.92` | Cosine similarity floor for the dedup-on-insert check. |
 | `APSOLUT_CORTEX_SHADOW` | _(unset)_ | When truthy, retrieval logs to `~/.apsolut-cortex/logs/shadow.jsonl` without injecting. |
 
@@ -298,9 +315,15 @@ All projects share one DB, namespaced by project UUID. No data leaves your
 machine except what you send to the Anthropic API for session compression.
 
 The on-disk format is libSQL — fully SQLite-compatible at the file level (any
-`sqlite3` CLI can read it), with the option to migrate to Turso cloud later by
-changing the connection URL alone. See [docs/STORAGE.md](docs/STORAGE.md) for the
-migration path and full schema.
+`sqlite3` CLI can read it) and Turso-compatible, so remote sync is a plausible
+next step. It is not implemented: cortex only ever opens `file:` URLs and exposes
+no URL/token configuration today. See [docs/STORAGE.md](docs/STORAGE.md) for the
+full schema.
+
+Raw transcripts (`raw_messages`, the source `memory_recall` reads) are stored
+**unencrypted by default** — encryption is opt-in, see below. `<private>…</private>`
+blocks are stripped before anything is stored, and rows older than
+`APSOLUT_CORTEX_RAW_RETENTION_DAYS` (90) are deleted at session end.
 
 ---
 

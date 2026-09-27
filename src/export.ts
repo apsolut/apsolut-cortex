@@ -433,8 +433,11 @@ export async function exportVault(
     );
   }
 
-  // Index — always regenerated based on the full byProject view
-  writeFileSync(indexPath, indexFile(byProject));
+  // Index — only from a full export. Rewriting it from a single-project view
+  // would drop every other project from the vault index.
+  if (!projectIdFilter) {
+    writeFileSync(indexPath, indexFile(byProject));
+  }
 
   return {
     memories_written: memories.length,

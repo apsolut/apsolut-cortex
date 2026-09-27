@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPushback, contentTerms } from "./prompt-cues.js";
+import { isPushback, contentTerms, extractCorrections } from "./prompt-cues.js";
 
 describe("isPushback", () => {
   test.each([
@@ -46,5 +46,49 @@ describe("contentTerms", () => {
 
   test("empty prompt yields no terms", () => {
     expect(contentTerms("")).toEqual([]);
+  });
+});
+
+describe("extractCorrections", () => {
+  test("catches explicit self-corrections", () => {
+    const found = extractCorrections(
+      "Actually, the config lives in src/config.ts and not where I looked first."
+    );
+    expect(found.length).toBe(1);
+    expect(found[0]).toContain("Self-correction:");
+    expect(found[0]).toContain("config lives in src/config.ts");
+  });
+
+  test("catches an admitted mistake", () => {
+    const found = extractCorrections(
+      "My mistake. The migration runner records names in the _migrations table."
+    );
+    expect(found.length).toBe(1);
+  });
+
+  test("ignores benign prose that the old patterns matched", () => {
+    // Both of these produced `correction` observations before 0.14.0 — the
+    // highest-priority category, surfaced first at SessionStart.
+    expect(extractCorrections("I will wait for the build to finish before running the tests.")).toEqual([]);
+    expect(extractCorrections("It seems reasonable to cache the embedder between calls.")).toEqual([]);
+    expect(extractCorrections("Turns out the tests take about two seconds to run in total.")).toEqual([]);
+  });
+
+  test("dedupes repeats and caps at five", () => {
+    const text = Array.from({ length: 9 }, (_, i) =>
+      `Actually, the correct file for step ${i} is src/step-${i}.ts in this repository.`
+    ).join(" ");
+    const found = extractCorrections(text);
+    expect(found.length).toBeLessThanOrEqual(5);
+    expect(new Set(found).size).toBe(found.length);
+  });
+
+  test("is repeatable — global regex state does not leak between calls", () => {
+    const text = "Actually, the database path is ~/.apsolut-cortex/memory.db on every platform.";
+    expect(extractCorrections(text)).toEqual(extractCorrections(text));
+  });
+
+  test("no matches in an empty transcript", () => {
+    expect(extractCorrections("")).toEqual([]);
   });
 });

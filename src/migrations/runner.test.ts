@@ -128,3 +128,72 @@ describe("runMigrations — lock", () => {
     db.close();
   });
 });
+
+describe("runMigrations — 006 decay clock", () => {
+  test("adds last_decay_at and is safe when the column already exists", async () => {
+    const db = await freshDb();
+    await runMigrations(db);
+
+    const cols = await db.execute("PRAGMA table_info(memories)");
+    expect(cols.rows.map((r) => r.name as string)).toContain("last_decay_at");
+
+    // Simulate a DB that already carries the column but lost its _migrations
+    // row (a hand-patched or re-encrypted copy): ADD COLUMN would throw.
+    await db.execute("DELETE FROM _migrations WHERE name = '006-decay-clock'");
+    const second = await runMigrations(db);
+    expect(second.applied).toContain("006-decay-clock");
+
+    db.close();
+  });
+});
+
+describe("runMigrations — concurrency", () => {
+  test("a second runner waits for the lock instead of hard-failing", async () => {
+    // The pre-0.14 runner failed on the first INSERT conflict, so one of
+    // several processes starting together died with "migration lock held by
+    // pid undefined since Invalid Date".
+    const db = await freshDb();
+    await runMigrations(db);
+
+    // Hold the lock with a fresh timestamp, then release it shortly after.
+    await db.execute({
+      sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
+      args: [999999, Date.now()],
+    });
+    setTimeout(() => {
+      db.execute("DELETE FROM _migrations_lock WHERE id = 1").catch(() => {});
+    }, 150);
+
+    // A pending migration forces the lock path (the fast path skips it).
+    const pending: Migration = {
+      name: "998-needs-the-lock",
+      async up(client) { await client.execute("SELECT 1"); },
+    };
+    const result = await runMigrations(db, [pending]);
+    expect(result.applied).toContain("998-needs-the-lock");
+
+    db.close();
+  });
+
+  test("skips the lock entirely when every migration is already applied", async () => {
+    const db = await freshDb();
+    await runMigrations(db);
+
+    // A live lock held by someone else must not block a no-op startup — this is
+    // the fast path every hook invocation takes.
+    await db.execute({
+      sql: "INSERT INTO _migrations_lock (id, pid, acquired_at) VALUES (1, ?, ?)",
+      args: [999999, Date.now()],
+    });
+
+    const result = await runMigrations(db);
+    expect(result.applied).toEqual([]);
+    expect(result.skipped.length).toBeGreaterThan(0);
+
+    // And the foreign lock is still there, untouched.
+    const lock = await db.execute("SELECT pid FROM _migrations_lock WHERE id = 1");
+    expect(lock.rows[0]?.pid).toBe(999999);
+
+    db.close();
+  });
+});

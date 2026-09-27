@@ -8,10 +8,29 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows is not incidental here: cortex does file-handle juggling for
+    # backups, spawns detached workers with windowsHide, and resolves Git Bash
+    # for hooks. Linux alone has hidden Windows-only breakage before.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      - run: bun run build
+      # The published artifact is the bundle, not src/ — a build that typechecks
+      # but produces a broken tarball is the failure mode this catches.
+      - run: npm pack --dry-run
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun audit

@@ -51,3 +51,40 @@ export function contentTerms(prompt: string, max = 8): string[] {
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
   return [...new Set(terms)].slice(0, max);
 }
+
+// ── Claude's own self-corrections (Stop hook) ────────────────────────────────
+
+/**
+ * Explicit self-correction cues only.
+ *
+ * Two patterns were removed after being shown to fire on ordinary prose:
+ * `(wait|oops)` matched "I will wait for the build to finish", and
+ * `(turns out|it seems)` matched "It seems reasonable to…". Both stored their
+ * match as a `correction` — the highest-priority category, weighted 1.5 and
+ * surfaced first at SessionStart — so a false positive there was expensive.
+ *
+ * Lives here rather than in the hook so it can be tested without executing a
+ * hook's stdin-reading entry point.
+ */
+const CORRECTION_PATTERNS = [
+  /actually,?\s+(?:the|it'?s?|that'?s?)\s+(.{20,150})/gi,
+  /(?:my mistake|i was wrong|incorrect)[^.]*[.!]\s*(.{20,150})/gi,
+  /(?:should(?:n'?t)? have|shouldn'?t).{0,30}[—–-]\s*(.{20,150})/gi,
+  /(?:the correct|correct(?:ly)?)\s+(?:way|path|file|approach)\s+is\s+(.{20,150})/gi,
+];
+
+/** At most five distinct self-corrections, prefixed for the observation log. */
+export function extractCorrections(transcript: string): string[] {
+  const found: string[] = [];
+  for (const pattern of CORRECTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(transcript)) !== null) {
+      const text = match[1]?.trim();
+      if (text && text.length > 20 && text.length < 200) {
+        found.push(`Self-correction: ${text}`);
+      }
+    }
+  }
+  return [...new Set(found)].slice(0, 5);
+}
