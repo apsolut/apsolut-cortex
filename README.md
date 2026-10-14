@@ -66,12 +66,14 @@ Restart Claude Code. Done.
 **Requirements**
 
 - **Node.js ≥ 20**
-- **A compression provider** — set `ANTHROPIC_API_KEY`, or run [Ollama](#compression-providers)
-  locally. Without one, cortex keeps captured observations for the next session and
-  reports the failure in-session (a hook `systemMessage` at session end, plus
-  breaker state in `apsolut-cortex status` / `doctor`); nothing is silently lost.
-  Note hooks inherit Claude Code's environment, not your shell profile — a key
-  exported in `.zshrc` may not reach them.
+- **A compression provider** — either `ANTHROPIC_API_KEY` or a local
+  [Ollama](#compression-providers). This is a real requirement, not a
+  nice-to-have: memories are *made* by summarizing captured observations, so
+  without a provider you get capture and no memories. Nothing is lost
+  meanwhile — the backlog compresses once a provider appears.
+  **Put the key in `~/.claude/settings.json` under `env`, not in your shell
+  profile** — hooks inherit Claude Code's environment, not `.zshrc`. See
+  [Where to put the key](#where-to-put-the-key).
 - **On Windows**, hooks run through Git Bash. Slim/MinGit installs need one extra
   setting — see [Troubleshooting](#troubleshooting) (or just run
   `apsolut-cortex doctor`).
@@ -241,9 +243,12 @@ apsolut-cortex delete --grep <pattern> --yes
 **Ops**
 ```bash
 apsolut-cortex migrate                  # apply pending schema migrations
-apsolut-cortex backup                   # snapshot DB under ~/.apsolut-cortex/backup/
+apsolut-cortex backup                   # consistent snapshot under ~/.apsolut-cortex/backup/
 apsolut-cortex restore                  # list snapshots
 apsolut-cortex restore <path> --yes     # restore (writes a safety snapshot first)
+apsolut-cortex reembed                  # backfill memories stored without an embedding
+apsolut-cortex reembed --all            # …across every project on the machine
+apsolut-cortex db reset-breaker         # clear the compression breaker after fixing a provider
 apsolut-cortex db re-encrypt            # dry-run encryption migration plan
 apsolut-cortex db re-encrypt --yes      # opt in to libSQL-native encryption at rest
 ```
@@ -258,25 +263,68 @@ apsolut-cortex eval baseline            # snapshot scores for delta tracking
 
 ## Compression providers
 
-Set one of these. Without a reachable provider, session-end compression reports
-the failure through a hook `systemMessage` and keeps the observations for the next
-session — nothing is lost, but no memories are extracted either. After three
-consecutive failures a circuit breaker pauses attempts for an hour;
-`apsolut-cortex status` and `apsolut-cortex doctor` both show its state:
+**You need one of these, and an API key is only one of the two ways to get it.**
+Turning observations into memories means summarizing them, and that takes a
+model. Embeddings, search, ranking, decay and storage are all local and need no
+provider at all — but *memory formation* is not optional work cortex can skip,
+so with no provider you get capture without memories.
 
-**Option 1 — Anthropic API**
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
+Pick either. Neither is a degraded mode:
 
-**Option 2 — Ollama** (free, local, private)
+**Option 1 — Anthropic API.** Set `ANTHROPIC_API_KEY` where the hooks can see it
+([below](#where-to-put-the-key)). One Haiku call per compression window, so the
+cost tracks how much you actually talk rather than how long cortex is installed
+— metered, but small.
+
+**Option 2 — Ollama.** Free, local, nothing leaves the machine.
 ```bash
 ollama pull qwen2.5-coder:7b
 ollama serve
 ```
 
-Override the model with `APSOLUT_CORTEX_OLLAMA_MODEL=llama3.1`, or the host with
+Override the model with `APSOLUT_CORTEX_ANTHROPIC_MODEL` or
+`APSOLUT_CORTEX_OLLAMA_MODEL=llama3.1`, or the host with
 `OLLAMA_HOST=http://localhost:11434`. See [docs/OLLAMA.md](docs/OLLAMA.md).
+
+### Where to put the key
+
+**`export` in `.bashrc` / `.zshrc` is the usual mistake.** Hooks are launched by
+Claude Code, so they inherit *its* environment, not your interactive shell's. A
+key that works perfectly in your terminal can be invisible to the hook that
+needs it, and the only symptom is memories never appearing.
+
+Put it in Claude Code's own settings instead — `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-..."
+  }
+}
+```
+
+Then `apsolut-cortex doctor` will confirm the hooks can see it. (Ollama needs
+nothing here: it is reached over HTTP, not through the environment.)
+
+### With no provider at all
+
+Nothing is lost and nothing is silently dropped:
+
+- observations and raw transcript keep accumulating in the database;
+- session end reports the failure through a hook `systemMessage` and a banner;
+- `doctor` shows how many observations are waiting;
+- the backlog compresses as soon as a provider is reachable, oldest first, in
+  batches of `APSOLUT_CORTEX_UNPROCESSED_BATCH` (50) per session end. Raise it
+  to drain a long backlog in one pass.
+
+Three consecutive failures *against a configured provider* open a circuit
+breaker that pauses attempts for an hour. Having no provider configured is a
+settings problem rather than a failing one, so it no longer counts toward that.
+If you have just fixed a provider and do not want to wait out the cooldown:
+
+```bash
+apsolut-cortex db reset-breaker
+```
 
 ---
 
@@ -287,14 +335,15 @@ people never set one. The five most commonly tweaked:
 
 | Env var | Default | What it does |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | _(unset)_ | Required for primary compression (Haiku). Without it, falls back to Ollama. |
+| `ANTHROPIC_API_KEY` | _(unset)_ | Primary compression provider (Haiku). Without it, falls back to Ollama; without either, no memories are formed. Set it in `~/.claude/settings.json` → `env`, not your shell profile. |
+| `APSOLUT_CORTEX_UNPROCESSED_BATCH` | `50` | Stale observations carried into compression per session end. Raise to drain a backlog faster. |
 | `APSOLUT_CORTEX_OBSERVE_THRESHOLD` | `30000` | Conversation tokens that fire mid-session compression. |
 | `APSOLUT_CORTEX_DECAY_DAYS` | `7` | Days unused before a memory's weight starts decaying, and the length of one decay window (decay applies at most once per window, per memory). |
 | `APSOLUT_CORTEX_DUPLICATE_THRESHOLD` | `0.92` | Cosine similarity floor for the dedup-on-insert check. |
 | `APSOLUT_CORTEX_SHADOW` | _(unset)_ | When truthy, retrieval logs to `~/.apsolut-cortex/logs/shadow.jsonl` without injecting. |
 
-The full reference — all 21 vars, grouped by concern with descriptions and
-trade-offs — lives in **[docs/CONFIG.md](docs/CONFIG.md)**.
+The full reference — every tuning variable, grouped by concern with descriptions
+and trade-offs — lives in **[docs/CONFIG.md](docs/CONFIG.md)**.
 
 ---
 
@@ -321,9 +370,18 @@ no URL/token configuration today. See [docs/STORAGE.md](docs/STORAGE.md) for the
 full schema.
 
 Raw transcripts (`raw_messages`, the source `memory_recall` reads) are stored
-**unencrypted by default** — encryption is opt-in, see below. `<private>…</private>`
-blocks are stripped before anything is stored, and rows older than
-`APSOLUT_CORTEX_RAW_RETENTION_DAYS` (90) are deleted at session end.
+**unencrypted by default** — encryption is opt-in, see below.
+
+`<private>…</private>` blocks are stripped before anything is stored **and
+before anything is sent to a compression provider**, so marked text cannot be
+summarized into a memory either. A message that is private in its entirety is
+skipped. An *unterminated* `<private>` discards everything after the tag:
+nothing marks where the secret ends, so the tail is treated as part of it.
+
+Rows older than `APSOLUT_CORTEX_RAW_RETENTION_DAYS` (90) are deleted at session
+end, except where they are the source range of a `proven` or `canonical`
+memory — those are exempt from decay and pruning, so their verbatim source is
+kept too.
 
 ---
 

@@ -45,8 +45,12 @@ Authoritative source: [`src/config.ts`](../src/config.ts). Grouped by concern:
 **Eval (M1)**
 - `APSOLUT_CORTEX_SHADOW` — `false` — when truthy (`true`/`1`/`yes`), `memory_search` runs retrieval but returns nothing to Claude. Would-be matches go to `~/.apsolut-cortex/logs/shadow.jsonl` instead. Useful for tuning retrieval against a real session without polluting context.
 
+**Observation recovery**
+- `APSOLUT_CORTEX_UNPROCESSED_BATCH` — `50` — how many stale observations one `SessionEnd` carries into compression. Bounded because the batch becomes a single provider prompt; raise it to drain a backlog accumulated while no provider was reachable (a project that ran for a while without one can hold hundreds, and at the default that is one session end per fifty).
+
 **Provider keys / endpoints**
-- `ANTHROPIC_API_KEY` — required for primary compression unless Ollama is reachable.
-- `APSOLUT_CORTEX_OLLAMA_MODEL` — `qwen2.5-coder:7b` — Ollama fallback model.
+- `ANTHROPIC_API_KEY` — primary compression provider. Without it *and* without a reachable Ollama, no memories are formed — observations accumulate and compress later. **Set it in `~/.claude/settings.json` under `env`, not in a shell profile:** hooks are launched by Claude Code and inherit its environment, so a key that works in your terminal can be invisible to them. `apsolut-cortex doctor` reports what the hooks can actually see.
+- `APSOLUT_CORTEX_ANTHROPIC_MODEL` — `claude-haiku-4-5-20251001` — compression model for the Anthropic path. Overridable so a retired model id does not break compression with no escape short of a release.
+- `APSOLUT_CORTEX_OLLAMA_MODEL` — `qwen2.5-coder:7b` — Ollama model.
 - `OLLAMA_HOST` — `http://localhost:11434` — Ollama server URL.
 - Full provider matrix lands with M7; see [PROVIDERS.md](PROVIDERS.md).
