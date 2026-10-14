@@ -139,11 +139,27 @@ export function writeScanCursor(sessionId: string, msgCount: number): void {
 // ── Single-flight lock ───────────────────────────────────────────────────────
 
 /**
- * Try to acquire the per-session compression lock. Returns true if we got
- * it (caller must releaseLock when done), false if another worker holds
- * a fresh lock. Stale locks (> LOCK_TTL_MS old) are treated as abandoned.
+ * Opaque proof that the holder owns the lock. Pass it back to releaseLock.
  */
-export function tryAcquireLock(sessionId: string): boolean {
+export type LockToken = string;
+
+function newToken(): LockToken {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Try to acquire the per-session compression lock. Returns an ownership token
+ * on success and null when another worker holds a fresh lock. Stale locks
+ * (> LOCK_TTL_MS old) are treated as abandoned.
+ *
+ * The token exists because releases used to be unconditional: any process
+ * could delete any lock. PreCompact force-proceeded after its wait and then
+ * released in a `finally`, and SessionEnd deleted whatever was left as
+ * "cleanup" — so a live worker's lock was routinely removed underneath it and
+ * two processes compressed the same window, double-billing the provider and
+ * racing each other's cursor write.
+ */
+export function tryAcquireLock(sessionId: string): LockToken | null {
   ensureDir();
   const path = lockPath(sessionId);
 
@@ -154,7 +170,7 @@ export function tryAcquireLock(sessionId: string): boolean {
       if (age > LOCK_TTL_MS) {
         try { unlinkSync(path); } catch { /* ignore */ }
       } else {
-        return false;
+        return null;
       }
     } catch {
       // statSync failed — try to recover by treating as stale.
@@ -165,15 +181,67 @@ export function tryAcquireLock(sessionId: string): boolean {
   // Exclusive create — 'wx' throws EEXIST if another process won the race
   // between the staleness check above and this write. Works on all
   // platforms (Windows included).
+  const token = newToken();
   try {
-    writeFileSync(path, String(process.pid), { flag: "wx" });
-    return true;
+    writeFileSync(path, token, { flag: "wx" });
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wait up to `timeoutMs` for the lock, polling. Returns a token or null.
+ * Used where giving up means losing a capture (PreCompact, SessionEnd tail)
+ * rather than merely skipping an optimization.
+ */
+export async function acquireLockWaiting(
+  sessionId: string,
+  timeoutMs: number,
+  pollMs = 200
+): Promise<LockToken | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const token = tryAcquireLock(sessionId);
+    if (token) return token;
+    if (Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
+
+/** True when the lock file exists and is still within its TTL. */
+export function lockHeld(sessionId: string): boolean {
+  const path = lockPath(sessionId);
+  if (!existsSync(path)) return false;
+  try {
+    return Date.now() - statSync(path).mtimeMs <= LOCK_TTL_MS;
   } catch {
     return false;
   }
 }
 
-export function releaseLock(sessionId: string): void {
+/**
+ * Release the lock, but only if `token` is the one that acquired it. Without
+ * a token this is a no-op — a caller that never acquired cannot release.
+ */
+export function releaseLock(sessionId: string, token: LockToken | null): void {
+  if (!token) return;
+  const path = lockPath(sessionId);
+  if (!existsSync(path)) return;
+  try {
+    if (readFileSync(path, "utf-8").trim() !== token) return; // not ours
+    unlinkSync(path);
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Delete a lock regardless of ownership.
+ *
+ * The escape hatch, not the normal path: a machine that hard-powers-off
+ * inside a compression leaves a lock whose TTL has not yet expired. Used by
+ * maintenance tooling and tests, never by the hooks.
+ */
+export function forceClearLock(sessionId: string): void {
   const path = lockPath(sessionId);
   if (existsSync(path)) {
     try { unlinkSync(path); } catch { /* best-effort */ }
@@ -181,11 +249,11 @@ export function releaseLock(sessionId: string): void {
 }
 
 /**
- * Force-release any lock for a session — used by SessionEnd to make sure
- * we are not leaving stale lockfiles around between sessions.
+ * Per-session cleanup at SessionEnd. Deliberately does NOT touch the lock:
+ * if a detached worker is still mid-compression, its lock is load-bearing,
+ * and the TTL already reclaims genuinely abandoned ones.
  */
 export function clearAllForSession(sessionId: string): void {
-  releaseLock(sessionId);
   clearCursor(sessionId);
   // Per-session side files: Stop's scan cursor and UserPromptSubmit's
   // already-injected id set. Left behind, these accumulate one pair per

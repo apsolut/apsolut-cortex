@@ -29,10 +29,15 @@ describe("stripPrivate", () => {
     expect(stripPrivate("   ")).toBeNull();
   });
 
-  test("leaves an unterminated block alone rather than dropping the tail", () => {
-    // Nothing marks where the secret ends, so the conservative choice is to
-    // stop scanning — losing the rest of the message would lose real content.
-    expect(stripPrivate("keep this <private>unterminated")).toBe("keep this <private>unterminated");
+  test("drops the tail of an unterminated block", () => {
+    // Nothing marks where the secret ends, so the only safe reading is that
+    // everything after the tag is secret. Keeping it failed open on the one
+    // construct whose whole purpose is to withhold something.
+    expect(stripPrivate("keep this <private>unterminated")).toBe("keep this");
+  });
+
+  test("an unterminated block that opens the message yields null", () => {
+    expect(stripPrivate("<private>sk-ant-secret-with-no-closing-tag")).toBeNull();
   });
 
   test("passes ordinary text through trimmed", () => {

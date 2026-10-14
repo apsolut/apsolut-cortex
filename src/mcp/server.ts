@@ -38,7 +38,7 @@ import {
 import { embed } from "../embed.js";
 import { stripPrivate } from "../privacy.js";
 import { validateMemoryInput } from "../validate.js";
-import { DATA_FRAME_PREAMBLE, fenceContent } from "../framing.js";
+import { DATA_FRAME_PREAMBLE, fenceContent, frameSummary } from "../framing.js";
 import {
   CORTEX_SEARCH_LIMIT_MAX,
   CORTEX_SEARCH_MULTIPLIER,
@@ -47,16 +47,36 @@ import {
   CORTEX_RECALL_TOKEN_BUDGET,
 } from "../config.js";
 import { logRetrieval, type RetrievalCandidate } from "../logs.js";
+import { checkProjectBinding } from "../registry.js";
 
 // Resolve project from env or cwd
 const PROJECT_PATH = process.env.APSOLUT_PROJECT_PATH ?? process.cwd();
 const projectFile = join(PROJECT_PATH, ".apsolut-cortex", "project.json");
 
 let project: { id: string; name: string } | null = null;
+let projectRefusal: string | null = null;
+
 if (existsSync(projectFile)) {
   try {
     project = JSON.parse(readFileSync(projectFile, "utf-8"));
   } catch {}
+}
+
+/**
+ * A project id is an authorization token for everything in the database, and
+ * it lives in a plain JSON file inside the workspace. Copy a repo (or clone
+ * one that ships a crafted `.apsolut-cortex/project.json`) and it claims the
+ * original's memories: search them, recall their raw transcripts, delete
+ * them. Startup also used to `upsertProject` unconditionally, silently
+ * rebinding that id's recorded path to the copy.
+ *
+ * The machine-local registry is the authority on which path owns which id.
+ * A mismatch is refused rather than resolved — relinking is an explicit act
+ * (`apsolut-cortex init` in the directory that should own it).
+ */
+if (project?.id) {
+  projectRefusal = checkProjectBinding(project.id, PROJECT_PATH);
+  if (projectRefusal) project = null;
 }
 
 const db = await getDb();
@@ -97,6 +117,7 @@ const SHADOW_MODE = ["true", "1", "yes"].includes(
 );
 
 function requireProject(): { id: string; name: string } {
+  if (projectRefusal) throw new Error(projectRefusal);
   if (!project?.id) throw new Error(
     "No project found. Run: apsolut-cortex init"
   );
@@ -141,13 +162,13 @@ async function hybridSearch(
   bm25.forEach((m) => allItems.set(m.id, m));
   vectorResults.forEach((m) => allItems.set(m.id, m));
 
+  // `merged` carries the fused RRF score, which is what MMR ranks on.
+  // Attaching `similarity: … ?? 0` and letting MMR use *that* as relevance is
+  // what made a BM25-only exact match score zero and lose to weaker semantic
+  // hits — the fusion was computed and then ignored.
   const merged = mergeRRF(bm25, vectorResults, fetchCount, allItems);
-  const withSimilarity = merged.map((m) => ({
-    ...m,
-    similarity: vectorResults.find((v) => v.id === m.id)?.similarity ?? 0,
-  }));
 
-  return { results: applyMMR(withSimilarity, queryEmb, limit), ranks };
+  return { results: applyMMR(merged, queryEmb, limit), ranks };
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -649,7 +670,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         ];
 
         if (lastSummary) {
-          lines.push("", "Last session:", `  ${lastSummary}`);
+          // Model-authored, derived from tool output — framed like a memory.
+          lines.push("", frameSummary(lastSummary, "Last session:"));
         }
 
         return textResult(lines.join("\n"));

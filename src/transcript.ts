@@ -115,16 +115,54 @@ export async function persistRawMessages(
 }
 
 /**
- * Convenience: read transcript, persist any new rows (idempotent), and
- * return the full transcript so caller can decide what to compress.
+ * Apply `<private>` stripping to a parsed transcript, dropping messages that
+ * are private in their entirety and preserving `msg_idx` on the rest.
+ *
+ * Exported because it is the guarantee, not an implementation detail: any
+ * path that forwards transcript text anywhere — the database, a compression
+ * provider, a log — goes through here first.
+ */
+export function sanitizeTranscript(messages: TranscriptMessage[]): TranscriptMessage[] {
+  const out: TranscriptMessage[] = [];
+  for (const m of messages) {
+    const content = stripPrivate(m.content);
+    if (content === null) continue;
+    out.push({ ...m, content });
+  }
+  return out;
+}
+
+export interface CapturedTranscript {
+  /** Sanitized messages, original `msg_idx` preserved. */
+  messages: TranscriptMessage[];
+  /**
+   * Number of messages in the file before sanitizing. The compression cursor
+   * is an index into the *file*, so it must advance past private messages
+   * that were dropped — otherwise the window never clears and every
+   * subsequent run re-reads the same tail forever.
+   */
+  total: number;
+}
+
+/**
+ * Read transcript, persist any new rows (idempotent), and return the
+ * sanitized messages plus the pre-sanitize message count.
+ *
+ * Returning sanitized content is the point. `persistRawMessages` has always
+ * stripped `<private>` on its way into the database, but this function used
+ * to hand back the *unstripped* array — and `compressSlice` forwarded it
+ * straight to Anthropic or Ollama, where a block the user explicitly marked
+ * private could be summarized into a memory and stored. The guarantee is now
+ * enforced here, once, for every consumer.
  */
 export async function captureTranscript(
   db: DbConn,
   sessionId: string,
   transcriptPath: string
-): Promise<TranscriptMessage[]> {
+): Promise<CapturedTranscript> {
   const transcript = readTranscript(transcriptPath);
-  if (transcript.length === 0) return [];
-  await persistRawMessages(db, sessionId, transcript);
-  return transcript;
+  if (transcript.length === 0) return { messages: [], total: 0 };
+  const safe = sanitizeTranscript(transcript);
+  await persistRawMessages(db, sessionId, safe);
+  return { messages: safe, total: transcript.length };
 }

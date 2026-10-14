@@ -16,6 +16,12 @@ function envNum(key, fallback) {
   const parsed = Number(val);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
+function envStr(key, fallback) {
+  const val = process.env[key]?.trim();
+  return val ? val : fallback;
+}
+var CORTEX_ANTHROPIC_MODEL = envStr("APSOLUT_CORTEX_ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
+var CORTEX_OLLAMA_MODEL = envStr("APSOLUT_CORTEX_OLLAMA_MODEL", "qwen2.5-coder:7b");
 var CORTEX_DUPLICATE_THRESHOLD = envNum("APSOLUT_CORTEX_DUPLICATE_THRESHOLD", 0.92);
 var CORTEX_DECAY_DAYS = envNum("APSOLUT_CORTEX_DECAY_DAYS", 7);
 var CORTEX_DECAY_OBSERVED = envNum("APSOLUT_CORTEX_DECAY_OBSERVED", 0.95);
@@ -33,6 +39,7 @@ var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+var CORTEX_UNPROCESSED_BATCH = envNum("APSOLUT_CORTEX_UNPROCESSED_BATCH", 50);
 var CORTEX_RECALL_TOKEN_BUDGET = envNum("APSOLUT_CORTEX_RECALL_TOKEN_BUDGET", 4000);
 var CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
 var CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
@@ -211,10 +218,12 @@ var _004_memory_tags_default = migration4;
 var migration5 = {
   name: "005-observation-prompt-id",
   async up(client) {
-    await client.executeMultiple(`
-      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
-      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
-    `);
+    const cols = await client.execute("PRAGMA table_info(observations)");
+    const have = new Set(cols.rows.map((r) => r.name));
+    if (!have.has("prompt_id")) {
+      await client.execute("ALTER TABLE observations ADD COLUMN prompt_id TEXT");
+    }
+    await client.execute("CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id)");
   }
 };
 var _005_observation_prompt_id_default = migration5;
@@ -637,6 +646,9 @@ import { homedir as homedir2 } from "os";
 var BREAKER_PATH = join2(homedir2(), ".apsolut-cortex", "compression-state.json");
 var MAX_FAILURES = 3;
 var COOLDOWN_MS = 60 * 60 * 1000;
+function providerConfigured() {
+  return Boolean(process.env.ANTHROPIC_API_KEY || process.env.OLLAMA_HOST || process.env.APSOLUT_CORTEX_OLLAMA_MODEL);
+}
 function readBreaker() {
   try {
     if (existsSync2(BREAKER_PATH))
@@ -702,7 +714,7 @@ ${o.content}`).join(`
 
 `);
   const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
+    model: CORTEX_ANTHROPIC_MODEL,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [
@@ -721,7 +733,7 @@ ${obsText}`
 }
 async function compressWithOllama(observations, project) {
   const OLLAMA_URL = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-  const MODEL = process.env.APSOLUT_CORTEX_OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  const MODEL = CORTEX_OLLAMA_MODEL;
   const obsText = observations.map((o, i) => `[${i + 1}]${o.tool_name ? ` Tool: ${o.tool_name}` : ""}
 ${o.content}`).join(`
 
@@ -795,7 +807,7 @@ async function compressSession(observations, project) {
     return { memories: [], summary: "" };
   }
   if (isBreakerOpen()) {
-    console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
+    console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h). " + "If you just fixed the provider, run: apsolut-cortex db reset-breaker");
     return null;
   }
   if (process.env.ANTHROPIC_API_KEY) {
@@ -814,7 +826,8 @@ async function compressSession(observations, project) {
     console.error("[apsolut-cortex] Used Ollama for compression.");
     return result;
   } catch (e) {
-    recordFailure();
+    if (providerConfigured())
+      recordFailure();
     const msg = [
       "",
       "╔══════════════════════════════════════════════════════════════╗",
@@ -879,6 +892,9 @@ function writeCursor(sessionId, msgIdx) {
   ensureDir();
   writeFileSync2(cursorPath(sessionId), String(msgIdx));
 }
+function newToken() {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 function tryAcquireLock(sessionId) {
   ensureDir();
   const path = lockPath(sessionId);
@@ -890,7 +906,7 @@ function tryAcquireLock(sessionId) {
           unlinkSync(path);
         } catch {}
       } else {
-        return false;
+        return null;
       }
     } catch {
       try {
@@ -898,20 +914,25 @@ function tryAcquireLock(sessionId) {
       } catch {}
     }
   }
+  const token = newToken();
   try {
-    writeFileSync2(path, String(process.pid), { flag: "wx" });
-    return true;
+    writeFileSync2(path, token, { flag: "wx" });
+    return token;
   } catch {
-    return false;
+    return null;
   }
 }
-function releaseLock2(sessionId) {
+function releaseLock2(sessionId, token) {
+  if (!token)
+    return;
   const path = lockPath(sessionId);
-  if (existsSync3(path)) {
-    try {
-      unlinkSync(path);
-    } catch {}
-  }
+  if (!existsSync3(path))
+    return;
+  try {
+    if (readFileSync2(path, "utf-8").trim() !== token)
+      return;
+    unlinkSync(path);
+  } catch {}
 }
 
 // src/transcript.ts
@@ -959,8 +980,10 @@ function stripPrivate(text) {
   let start;
   while ((start = result.toLowerCase().indexOf("<private>")) !== -1) {
     const end = result.toLowerCase().indexOf("</private>", start);
-    if (end === -1)
+    if (end === -1) {
+      result = result.slice(0, start);
       break;
+    }
     result = result.slice(0, start) + result.slice(end + "</private>".length);
   }
   const stripped = result.trim();
@@ -1022,24 +1045,35 @@ async function persistRawMessages(db, sessionId, messages, now = Date.now()) {
   }
   return inserted;
 }
+function sanitizeTranscript(messages) {
+  const out = [];
+  for (const m of messages) {
+    const content = stripPrivate(m.content);
+    if (content === null)
+      continue;
+    out.push({ ...m, content });
+  }
+  return out;
+}
 async function captureTranscript(db, sessionId, transcriptPath) {
   const transcript = readTranscript(transcriptPath);
   if (transcript.length === 0)
-    return [];
-  await persistRawMessages(db, sessionId, transcript);
-  return transcript;
+    return { messages: [], total: 0 };
+  const safe = sanitizeTranscript(transcript);
+  await persistRawMessages(db, sessionId, safe);
+  return { messages: safe, total: transcript.length };
 }
 
 // src/compress-runner.ts
 async function compressSlice(args) {
   const { db, sessionId, projectId, projectName, transcriptPath, source } = args;
   await upsertSession(db, { id: sessionId, project_id: projectId });
-  const transcript = await captureTranscript(db, sessionId, transcriptPath);
-  if (transcript.length === 0) {
+  const { messages: transcript, total } = await captureTranscript(db, sessionId, transcriptPath);
+  if (total === 0) {
     return { raw_persisted: 0, memories_stored: 0, duplicates_bumped: 0, new_cursor: 0 };
   }
   const cursor = readCursor(sessionId);
-  const endIdx = transcript[transcript.length - 1].msg_idx + 1;
+  const endIdx = total;
   if (cursor >= endIdx) {
     return { raw_persisted: transcript.length, memories_stored: 0, duplicates_bumped: 0, new_cursor: cursor };
   }
@@ -1138,7 +1172,8 @@ async function main() {
   }
   if (!project?.id)
     process.exit(0);
-  if (!tryAcquireLock(sessionId)) {
+  const token = tryAcquireLock(sessionId);
+  if (!token) {
     process.stderr.write(`[apsolut-cortex] compress-worker: lock held, skipping
 `);
     process.exit(0);
@@ -1161,7 +1196,7 @@ async function main() {
     process.stderr.write(`[apsolut-cortex] compress-worker error: ${e}
 `);
   } finally {
-    releaseLock2(sessionId);
+    releaseLock2(sessionId, token);
   }
 }
 main().catch(() => process.exit(0));

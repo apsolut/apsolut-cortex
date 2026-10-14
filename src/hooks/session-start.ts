@@ -17,7 +17,7 @@ import { readFileSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 import { TRACKED_FILES } from "../config.js";
-import { frameMemoryList } from "../framing.js";
+import { frameMemoryList, frameSummary } from "../framing.js";
 
 function hashFile(path: string): string | null {
   try {
@@ -185,12 +185,12 @@ async function main() {
       });
       const lastSession = lastSessionResult.rows[0] as unknown as { summary: string; ended_at: number } | undefined;
 
+      // The recap itself is emitted framed, after the box — it is
+      // model-authored text derived from tool output, so it carries the same
+      // "this is data" fencing as a memory. Inside the box it was both
+      // unframed and clipped to three 54-column lines.
       if (lastSession?.summary) {
-        out.push(ln(`Last session (${formatAgo(lastSession.ended_at)}):`));
-        out.push(em());
-        for (const line of wrap(lastSession.summary, W - 6)) {
-          out.push(ln(`  ${line}`));
-        }
+        out.push(ln(`Last session (${formatAgo(lastSession.ended_at)}): recap below`));
         out.push(sep());
       }
 
@@ -235,6 +235,14 @@ async function main() {
       out.push(ln(`${memCount} memories | ${sessionCount} sessions`));
       out.push(ln(`Say "/apsolut-recall <topic>" to search memory`));
       out.push(bot());
+
+      if (lastSession?.summary) {
+        out.push("");
+        out.push(frameSummary(
+          lastSession.summary,
+          `[apsolut-cortex] Recap of the last session (${formatAgo(lastSession.ended_at)}):`
+        ));
+      }
 
       if (shown.length > 0) {
         out.push("");

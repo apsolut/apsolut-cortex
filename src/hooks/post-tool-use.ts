@@ -167,7 +167,8 @@ async function main() {
         // Synchronous safety net — block tool execution briefly to make
         // sure we capture before Claude Code compacts on its own.
         const { tryAcquireLock, releaseLock } = await import("../buffer.js");
-        if (tryAcquireLock(sessionId)) {
+        const token = tryAcquireLock(sessionId);
+        if (token) {
           try {
             const { compressSlice } = await import("../compress-runner.js");
             await compressSlice({
@@ -181,7 +182,7 @@ async function main() {
           } catch (e) {
             process.stderr.write(`[apsolut-cortex] sync compression failed: ${e}\n`);
           } finally {
-            releaseLock(sessionId);
+            releaseLock(sessionId, token);
           }
         }
       } else if (tokens >= config.CORTEX_OBSERVE_THRESHOLD) {

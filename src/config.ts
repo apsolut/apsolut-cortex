@@ -10,6 +10,31 @@ function envNum(key: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function envStr(key: string, fallback: string): string {
+  const val = process.env[key]?.trim();
+  return val ? val : fallback;
+}
+
+// ── Compression providers ───────────────────────────────────────────────────
+
+/**
+ * Anthropic model used for session compression.
+ *
+ * Overridable for the same reason the Ollama model always was: a hardcoded
+ * model id is a time bomb. When the id is retired, compression starts failing
+ * on every machine with no way to point it somewhere else short of a release.
+ */
+export const CORTEX_ANTHROPIC_MODEL = envStr(
+  "APSOLUT_CORTEX_ANTHROPIC_MODEL",
+  "claude-haiku-4-5-20251001"
+);
+
+/** Ollama model for the local fallback. */
+export const CORTEX_OLLAMA_MODEL = envStr(
+  "APSOLUT_CORTEX_OLLAMA_MODEL",
+  "qwen2.5-coder:7b"
+);
+
 // ── Duplicate Detection ─────────────────────────────────────────────────────
 
 /** Cosine similarity threshold for dedup (0-1). Higher = stricter matching. */
@@ -71,12 +96,30 @@ export const CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 // ── Raw message retention (M4) ──────────────────────────────────────────────
 
 /**
- * Days to keep rows in raw_messages before cleanup. The cleanup job runs
- * on SessionEnd and only deletes raw rows whose memories have been
- * promoted to is_pinned=true (introduced in M8). Until M8, all rows are
- * retained regardless of this value.
+ * Days to keep rows in raw_messages before cleanup, enforced on SessionEnd.
+ *
+ * Rows covered by the source range of a `proven` or `canonical` memory are
+ * exempt — those are the memories the user promoted by hand, and they are
+ * already exempt from decay and pruning, so their verbatim source outlives
+ * the window too. Everything else goes at the cutoff.
+ *
+ * (This used to describe an `is_pinned` scheme and promise that "until M8,
+ * all rows are retained regardless of this value". No `is_pinned` column was
+ * ever added, and the purge deleted unconditionally by age.)
  */
 export const CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+
+// ── Observation recovery ────────────────────────────────────────────────────
+
+/**
+ * How many stale observations one session end carries into compression.
+ *
+ * Bounded because the batch becomes a single provider prompt. Raise it to
+ * drain a large backlog faster — a project that ran for a while without a
+ * compression provider can accumulate hundreds, and at the default that is
+ * one session end per fifty.
+ */
+export const CORTEX_UNPROCESSED_BATCH = envNum("APSOLUT_CORTEX_UNPROCESSED_BATCH", 50);
 
 // ── Recall payload budget ───────────────────────────────────────────────────
 

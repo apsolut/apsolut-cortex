@@ -32,7 +32,15 @@ import {
   writeHooks,
 } from "./hook-settings.js";
 import { registerProject } from "./registry.js";
-import { getDb, insertMemory, DB_PATH } from "./db.js";
+import {
+  getDb,
+  insertMemory,
+  DB_PATH,
+  countMemoriesMissingEmbedding,
+  listMemoriesMissingEmbedding,
+  setMemoryEmbedding,
+  countUnprocessedObservations,
+} from "./db.js";
 import { runMigrations } from "./migrations/runner.js";
 import { getLastRetrieval, logCorrection } from "./logs.js";
 import { embed } from "./embed.js";
@@ -40,7 +48,7 @@ import { CORTEX_CORRECTION_WEIGHT } from "./config.js";
 import { snapshot, listBackups, restore, reencryptToKey, reencryptUnsupportedReason, BACKUP_DIR } from "./backup.js";
 import { getDbKey, setDbKey, generateDbKey } from "./keyring.js";
 import { exportVault, OBSIDIAN_DIR } from "./export.js";
-import { getBreakerState } from "./compress.js";
+import { getBreakerState, clearBreaker } from "./compress.js";
 import { diagnoseGitBash, gatherGitBashProbe, renderGitBashWarning, bashRuns, FULL_GIT_URL, FULL_GIT_WINGET } from "./gitbash.js";
 import {
   promoteMemory,
@@ -78,6 +86,76 @@ const PROJECT_CONFIG = join(PROJECT_APSOLUT, "project.json");
 const PROJECT_CLAUDE_DIR = join(PROJECT_ROOT, ".claude");
 const PROJECT_SETTINGS_LOCAL = join(PROJECT_CLAUDE_DIR, "settings.local.json");
 const PROJECT_SETTINGS = join(PROJECT_CLAUDE_DIR, "settings.json");
+
+// ── Command dispatch ──────────────────────────────────────────────────────────
+// Top-level switch, relying on function hoisting for the handlers below. This
+// block was lost in 0.14.0, which shipped a CLI that parsed no arguments at
+// all: every command — including the `hook:*` entry points the hooks
+// themselves invoke — exited 0 in silence. See cli.dispatch.test.ts.
+
+const cmd = process.argv[2];
+
+switch (cmd) {
+  case "init":               await init(); break;
+  case "status":             await status(); break;
+  case "migrate":            await migrate(); break;
+  case "correct":            await correctCmd(process.argv.slice(3)); break;
+  case "export":             await exportCmd(); break;
+  case "promote":            await promoteCmd(process.argv[3]); break;
+  case "demote":             await demoteCmd(process.argv[3]); break;
+  case "tag":                await tagCmd(process.argv[3], process.argv[4]); break;
+  case "untag":              await untagCmd(process.argv[3], process.argv[4]); break;
+  case "grep":               await grepCmd(process.argv.slice(3)); break;
+  case "delete":             await deleteCmd(process.argv.slice(3)); break;
+  case "backup":             await backupCmd(); break;
+  case "restore":            await restoreCmd(process.argv[3], process.argv.slice(4)); break;
+  case "db":                 await dbCmd(process.argv[3], process.argv.slice(4)); break;
+  case "eval":               await evalCmd(process.argv[3]); break;
+  case "reembed":            await reembedCmd(process.argv.slice(3)); break;
+  case "uninstall":          uninstall(); break;
+  case "hook:session-start":   await runHook("session-start"); break;
+  case "hook:user-prompt-submit": await runHook("user-prompt-submit"); break;
+  case "hook:post-tool-use":   await runHook("post-tool-use"); break;
+  case "hook:stop":            await runHook("stop"); break;
+  case "hook:session-end":     await runHook("session-end"); break;
+  case "hook:pre-compact":     await runHook("pre-compact"); break;
+  case "hook:compress-worker": await runHook("compress-worker"); break;
+  case "install-hooks":        await installHooksCmd(process.argv.slice(3)); break;
+  case "doctor":               await doctor(); break;
+  case "help": case "--help": case "-h":
+  default:
+    console.log(`
+  ┌──────────────────────────────────────────────────┐
+  │                                                  │
+  │       c o r t e x  ·  v ${PKG_VERSION.padEnd(25)}│
+  │                                                  │
+  ├──────────────────────────────────────────────────┤
+  │  Commands:                                       │
+  │    init        Set up memory for a project       │
+  │    status      Show memory stats                 │
+  │    migrate     Apply pending schema migrations   │
+  │    correct     Flag last retrieval as a miss     │
+  │    export      Export memories to Obsidian vault │
+  │    promote     Promote a memory trust tier       │
+  │    demote      Demote a memory trust tier        │
+  │    tag/untag   Add/remove a tag                  │
+  │    grep        Substring search across memories  │
+  │    delete      Single or bulk delete (--id, etc) │
+  │    install-hooks  Wire M6 hooks (PreCompact+)    │
+  │    reembed     Repair memories missing vectors   │
+  │    backup      Snapshot the DB                   │
+  │    restore     Restore a snapshot                │
+  │    db re-encrypt  Migrate DB to encrypted        │
+  │    db reset-breaker  Clear compression breaker   │
+  │    uninstall   Remove hooks & MCP config         │
+  │    doctor      Diagnose hook/env problems        │
+  │    help        Show this help                    │
+  ├──────────────────────────────────────────────────┤
+  │  DB:     ~/.apsolut-cortex/memory.db             │
+  │  Models: ~/.apsolut-cortex/models/               │
+  └──────────────────────────────────────────────────┘
+`);
+}
 
 // ── Hook dispatcher ───────────────────────────────────────────────────────────
 
@@ -383,6 +461,36 @@ async function doctor() {
     console.log(
       `${open ? r("✗") : y("⚠")} Compression circuit breaker: ${breaker.failures} recent failure(s), last ${mins}m ago${open ? " — currently open, compression is skipped" : ""}`
     );
+    if (open) {
+      console.log(`    Fixed the provider already? Clear it: apsolut-cortex db reset-breaker`);
+    }
+  }
+
+  // ── Embeddings ─────────────────────────────────────────────────────────
+  // A memory stored while the embedder was down is invisible to vector
+  // search and to dedup, forever, and nothing else reports it.
+  if (existsSync(DB_PATH) && project?.id) {
+    try {
+      const db = await getDb();
+      const missing = await countMemoriesMissingEmbedding(db, project.id);
+      if (missing > 0) {
+        console.log(
+          `${y("⚠")} ${missing} memor${missing === 1 ? "y" : "ies"} stored without an embedding — excluded from vector search and dedup.`
+        );
+        console.log(`    Repair: apsolut-cortex reembed`);
+      } else {
+        console.log(`${g("✓")} All memories have embeddings.`);
+      }
+
+      const backlog = await countUnprocessedObservations(db, project.id);
+      if (backlog > 0) {
+        console.log(
+          `${y("⚠")} ${backlog} observation(s) awaiting compression — recovered 50 per session end.`
+        );
+      }
+    } catch (e) {
+      console.log(`${y("⚠")} Could not inspect embeddings: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // ── Windows Git Bash ───────────────────────────────────────────────────
@@ -783,7 +891,7 @@ async function backupCmd() {
   }
   let dest: string;
   try {
-    dest = snapshot("manual");
+    dest = await snapshot("manual");
   } catch (e) {
     console.log(`[apsolut-cortex] ✗ Backup failed: ${e instanceof Error ? e.message : e}`);
     process.exitCode = 1;
@@ -825,7 +933,7 @@ async function restoreCmd(target: string | undefined, args: string[]) {
     return;
   }
   try {
-    const result = restore(target);
+    const result = await restore(target);
     console.log(`[apsolut-cortex] ✓ Restored ${result.restored} → ${DB_PATH}`);
     if (result.safetyBackup) {
       console.log(`[apsolut-cortex]   Pre-restore safety snapshot at ${result.safetyBackup}`);
@@ -835,6 +943,73 @@ async function restoreCmd(target: string | undefined, args: string[]) {
     console.log(`[apsolut-cortex]   ${DB_PATH} was left as it was.`);
     process.exitCode = 1;
   }
+}
+
+// ── Embedding repair ──────────────────────────────────────────────────────────
+
+/**
+ * Re-embed memories that were stored without an embedding.
+ *
+ * `embed()` pulls MiniLM over the network on first use, from inside a hook.
+ * When that fails the memory is still stored — correctly, losing it would be
+ * worse — but with a NULL embedding, which excludes it from vector search and
+ * from duplicate detection permanently. There was no way to find those rows
+ * and no way to fix them.
+ */
+async function reembedCmd(args: string[]) {
+  const allProjects = args.includes("--all");
+
+  let project: { id: string; name: string } | null = null;
+  if (existsSync(PROJECT_CONFIG)) {
+    try { project = JSON.parse(readFileSync(PROJECT_CONFIG, "utf-8")); } catch {}
+  }
+  if (!allProjects && !project?.id) {
+    console.log(`[apsolut-cortex] No project here. Run \`apsolut-cortex init\`, or pass --all.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const scope = allProjects ? undefined : project!.id;
+  const db = await getDb();
+  const total = await countMemoriesMissingEmbedding(db, scope);
+
+  if (total === 0) {
+    console.log(`[apsolut-cortex] ✓ Every memory ${allProjects ? "on this machine" : `in ${project!.name}`} has an embedding.`);
+    return;
+  }
+
+  console.log(
+    `[apsolut-cortex] ${total} memor${total === 1 ? "y" : "ies"} without an embedding — invisible to vector search and dedup.`
+  );
+
+  let fixed = 0;
+  let failed = 0;
+  for (;;) {
+    const batch = await listMemoriesMissingEmbedding(db, 50, scope);
+    if (batch.length === 0) break;
+
+    for (const m of batch) {
+      const text = m.context ? `${m.content} ${m.context}` : m.content;
+      try {
+        await setMemoryEmbedding(db, m.id, await embed(text));
+        fixed++;
+      } catch (e) {
+        failed++;
+        console.log(`[apsolut-cortex] ✗ ${m.id}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
+    // The embedder is the thing that was broken. If it is still broken, stop
+    // rather than looping over the same rows printing the same error.
+    if (failed > 0 && fixed === 0) {
+      console.log(`[apsolut-cortex] Embedder is still unavailable — stopping. Nothing was lost; re-run when it works.`);
+      process.exitCode = 1;
+      break;
+    }
+    if (fixed + failed >= total) break;
+  }
+
+  console.log(`[apsolut-cortex] ✓ Re-embedded ${fixed} memor${fixed === 1 ? "y" : "ies"}${failed > 0 ? `, ${failed} failed` : ""}.`);
 }
 
 // ── DB management ─────────────────────────────────────────────────────────────
@@ -890,9 +1065,26 @@ async function dbCmd(sub: string | undefined, args: string[]) {
       }
       break;
     }
+    case "reset-breaker": {
+      // `doctor` could report an open compression breaker but not close one,
+      // so "I fixed my API key and nothing is being remembered" had no
+      // remedy short of deleting an undocumented file.
+      const previous = clearBreaker();
+      if (previous.failures === 0) {
+        console.log(`[apsolut-cortex] Compression breaker was already closed. Nothing to do.`);
+        return;
+      }
+      const mins = Math.round((Date.now() - previous.lastFailure) / 60000);
+      console.log(
+        `[apsolut-cortex] ✓ Compression breaker cleared (was ${previous.failures} failure${previous.failures === 1 ? "" : "s"}, last ${mins}m ago).`
+      );
+      console.log(`  The next session end will attempt compression again.`);
+      break;
+    }
     default:
       console.log(`[apsolut-cortex] db — subcommands:`);
-      console.log(`  apsolut-cortex db re-encrypt   Migrate the DB to encrypted at rest`);
+      console.log(`  apsolut-cortex db re-encrypt     Migrate the DB to encrypted at rest`);
+      console.log(`  apsolut-cortex db reset-breaker  Clear the compression circuit breaker`);
       break;
   }
 }

@@ -30,6 +30,19 @@ export interface FramableMemory {
 }
 
 /**
+ * Frame a stored session summary.
+ *
+ * Summaries are written by the compression model from observations that
+ * include tool output, stored verbatim, and re-injected at the next
+ * SessionStart and by `memory_status` — the same untrusted-data path as a
+ * memory, and it was the one path with no framing on it. Poisoned tool
+ * output could become a standing instruction by way of the recap.
+ */
+export function frameSummary(summary: string, heading: string): string {
+  return [heading, DATA_FRAME_PREAMBLE, "", fenceContent(summary)].join("\n");
+}
+
+/**
  * Frame a list of memories as a markdown-ish data block. Used by the
  * SessionStart banner, UserPromptSubmit injection, and post-compaction
  * re-injection — everywhere content enters context without a tool call.

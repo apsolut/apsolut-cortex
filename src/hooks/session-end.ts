@@ -16,7 +16,8 @@ import {
   upsertSession,
   getSessionObservations,
   getUnprocessedObservations,
-  markProjectObservationsPromoted,
+  markObservationsPromotedByIds,
+  countUnprocessedObservations,
   insertMemory,
   findDuplicate,
   bumpWeight,
@@ -32,7 +33,7 @@ import { TRACKED_FILES, CORTEX_CORRECTION_WEIGHT, CORTEX_RAW_RETENTION_DAYS } fr
 import { exportVault } from "../export.js";
 import { compressSlice } from "../compress-runner.js";
 import {
-  tryAcquireLock,
+  acquireLockWaiting,
   releaseLock,
   clearAllForSession,
 } from "../buffer.js";
@@ -75,6 +76,10 @@ async function main() {
     const currentObs = await getSessionObservations(db, sessionId);
     const staleObs = await getUnprocessedObservations(db, project.id, sessionId);
     const observations = [...currentObs, ...staleObs];
+    // Only these ids get promoted on success. Anything beyond the recovery
+    // batch stays unprocessed and is picked up by the next session instead of
+    // being written off unseen.
+    const observationIds = observations.map((o) => o.id);
 
     // Detect which tracked files changed since session start
     const currentHashes = TRACKED_FILES
@@ -141,8 +146,8 @@ async function main() {
         stored++;
       }
 
-      if (observations.length > 0 && !compressionFailed) {
-        await markProjectObservationsPromoted(tx, project.id);
+      if (observationIds.length > 0 && !compressionFailed) {
+        await markObservationsPromotedByIds(tx, observationIds);
       }
 
       await upsertSession(tx, {
@@ -156,6 +161,15 @@ async function main() {
       await tx.commit();
     } finally {
       tx.close();
+    }
+
+    // A backlog that outlives this session is normal (recovery is batched),
+    // but it should be visible rather than implied.
+    const backlog = await countUnprocessedObservations(db, project.id);
+    if (backlog > 0) {
+      console.error(
+        `[apsolut-cortex] ${backlog} observation(s) still awaiting compression — the next session picks up the next batch`
+      );
     }
 
     const { pruned } = await decayAndPrune(db, project.id);
@@ -183,26 +197,36 @@ async function main() {
     // covered yet. This guarantees that on the next session, memory_recall
     // can resolve every memory created this session back to raw context.
     if (transcriptPath) {
-      const got = tryAcquireLock(sessionId);
-      try {
-        const result = await compressSlice({
-          db,
-          sessionId,
-          projectId: project.id,
-          projectName: project.name,
-          transcriptPath,
-          source: "session-end",
-        });
-        if (result.failed) compressionFailed = true;
-        if (result.memories_stored > 0 || result.raw_persisted > 0) {
-          console.error(
-            `[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`
-          );
+      // Wait for an in-flight worker instead of racing it. The tail pass only
+      // ever ran because the lock was *checked* and then ignored, so two
+      // processes could read the same cursor, pay for two provider calls and
+      // overwrite each other's advance.
+      const token = await acquireLockWaiting(sessionId, 10_000);
+      if (!token) {
+        console.error(
+          "[apsolut-cortex] SessionEnd tail skipped — a compression worker still holds the lock; its run covers this window"
+        );
+      } else {
+        try {
+          const result = await compressSlice({
+            db,
+            sessionId,
+            projectId: project.id,
+            projectName: project.name,
+            transcriptPath,
+            source: "session-end",
+          });
+          if (result.failed) compressionFailed = true;
+          if (result.memories_stored > 0 || result.raw_persisted > 0) {
+            console.error(
+              `[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`
+            );
+          }
+        } catch (e) {
+          console.error(`[apsolut-cortex] SessionEnd tail compression failed: ${e}`);
+        } finally {
+          releaseLock(sessionId, token);
         }
-      } catch (e) {
-        console.error(`[apsolut-cortex] SessionEnd tail compression failed: ${e}`);
-      } finally {
-        if (got) releaseLock(sessionId);
       }
     }
 

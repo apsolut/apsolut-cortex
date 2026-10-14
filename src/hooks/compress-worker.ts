@@ -45,7 +45,8 @@ async function main(): Promise<void> {
   if (!project?.id) process.exit(0);
 
   // Single-flight: another worker or PreCompact may be mid-run. Just exit.
-  if (!tryAcquireLock(sessionId)) {
+  const token = tryAcquireLock(sessionId);
+  if (!token) {
     process.stderr.write(`[apsolut-cortex] compress-worker: lock held, skipping\n`);
     process.exit(0);
   }
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
   } catch (e) {
     process.stderr.write(`[apsolut-cortex] compress-worker error: ${e}\n`);
   } finally {
-    releaseLock(sessionId);
+    releaseLock(sessionId, token);
   }
 }
 

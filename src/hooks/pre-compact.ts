@@ -24,7 +24,7 @@ import { join } from "path";
 import { getDb } from "../db.js";
 import { compressSlice } from "../compress-runner.js";
 import {
-  tryAcquireLock,
+  acquireLockWaiting,
   releaseLock,
 } from "../buffer.js";
 
@@ -51,13 +51,17 @@ async function main(): Promise<void> {
   try { project = JSON.parse(readFileSync(projectFile, "utf-8")); } catch { process.exit(0); }
   if (!project?.id) process.exit(0);
 
-  // Wait up to 3 seconds for any in-flight worker to release its lock,
-  // then force-acquire (the lock has a 5-min TTL anyway, but for the
-  // PreCompact emergency capture we do not want to skip just because
-  // something else is mid-run).
-  const deadline = Date.now() + 3000;
-  while (!tryAcquireLock(sessionId) && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 200));
+  // Wait for any in-flight worker to finish. If it is still running after
+  // the wait we do NOT barge in: the worker is compressing the same window,
+  // so proceeding would duplicate the provider call and race its cursor
+  // write. Previously the wait expired and we continued regardless, then
+  // deleted the worker's lock on the way out.
+  const token = await acquireLockWaiting(sessionId, 3000);
+  if (!token) {
+    process.stderr.write(
+      "[apsolut-cortex] PreCompact: a compression worker is already running this window — deferring to it\n"
+    );
+    process.exit(0);
   }
 
   try {
@@ -77,12 +81,12 @@ async function main(): Promise<void> {
     process.stderr.write(
       `[apsolut-cortex] PreCompact compression failed — this compaction window was NOT persisted to memory: ${e}\n`
     );
-    releaseLock(sessionId);
+    releaseLock(sessionId, token);
     // Exit 2 → with asyncRewake, Claude is woken and shown the stderr
     // above; it can retry via the MCP tools or warn the user.
     process.exit(2);
   } finally {
-    releaseLock(sessionId);
+    releaseLock(sessionId, token);
   }
 }
 

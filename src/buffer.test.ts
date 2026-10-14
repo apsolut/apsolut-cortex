@@ -13,7 +13,10 @@ import {
   writeCursor,
   clearCursor,
   tryAcquireLock,
+  acquireLockWaiting,
+  lockHeld,
   releaseLock,
+  forceClearLock,
   clearAllForSession,
   BUFFER_DIR,
 } from "./buffer.js";
@@ -26,7 +29,9 @@ const testSessions: string[] = [];
 
 afterAll(() => {
   for (const sid of testSessions) {
-    try { clearAllForSession(sid); drainAndDelete(sid); } catch {}
+    // forceClearLock, not releaseLock: cleanup has no tokens to hand back,
+    // and clearAllForSession deliberately leaves live locks in place.
+    try { clearAllForSession(sid); forceClearLock(sid); drainAndDelete(sid); } catch {}
   }
 });
 
@@ -92,27 +97,66 @@ describe("cursor", () => {
 });
 
 describe("single-flight lock", () => {
-  test("first acquire returns true, second returns false until released", () => {
+  test("first acquire returns a token, second returns null until released", () => {
     const sid = newSessionId("lock");
     testSessions.push(sid);
 
-    expect(tryAcquireLock(sid)).toBe(true);
-    expect(tryAcquireLock(sid)).toBe(false);
-    releaseLock(sid);
-    expect(tryAcquireLock(sid)).toBe(true);
-    releaseLock(sid);
+    const first = tryAcquireLock(sid);
+    expect(first).toBeTruthy();
+    expect(tryAcquireLock(sid)).toBeNull();
+    releaseLock(sid, first);
+    const second = tryAcquireLock(sid);
+    expect(second).toBeTruthy();
+    releaseLock(sid, second);
   });
 
-  test("clearAllForSession removes both lock and cursor", () => {
+  test("a release without the owning token does nothing", () => {
+    // The whole point: PreCompact and SessionEnd used to delete locks they
+    // did not own, letting two processes compress the same window.
     const sid = newSessionId("lock");
     testSessions.push(sid);
 
-    tryAcquireLock(sid);
+    const owner = tryAcquireLock(sid);
+    expect(owner).toBeTruthy();
+
+    releaseLock(sid, null);
+    releaseLock(sid, "not-the-real-token");
+    expect(lockHeld(sid)).toBe(true);
+    expect(tryAcquireLock(sid)).toBeNull();
+
+    releaseLock(sid, owner);
+    expect(lockHeld(sid)).toBe(false);
+  });
+
+  test("acquireLockWaiting gives up rather than barging in", async () => {
+    const sid = newSessionId("lock");
+    testSessions.push(sid);
+
+    const owner = tryAcquireLock(sid);
+    const t0 = Date.now();
+    const contender = await acquireLockWaiting(sid, 400, 50);
+    expect(contender).toBeNull();
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
+    expect(lockHeld(sid)).toBe(true);
+
+    releaseLock(sid, owner);
+    const after = await acquireLockWaiting(sid, 400, 50);
+    expect(after).toBeTruthy();
+    releaseLock(sid, after);
+  });
+
+  test("clearAllForSession clears the cursor but leaves a live lock alone", () => {
+    const sid = newSessionId("lock");
+    testSessions.push(sid);
+
+    const owner = tryAcquireLock(sid);
     writeCursor(sid, 7);
     clearAllForSession(sid);
-    expect(tryAcquireLock(sid)).toBe(true);
+
     expect(readCursor(sid)).toBe(0);
-    releaseLock(sid);
+    // A detached worker may still be mid-compression; its lock is load-bearing.
+    expect(lockHeld(sid)).toBe(true);
+    releaseLock(sid, owner);
   });
 });
 

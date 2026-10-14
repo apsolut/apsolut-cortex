@@ -121,6 +121,38 @@ describe("applyMMR", () => {
     expect(applyMMR([top, duplicate, different], query, 2)[1].id).toBe("duplicate");
   });
 
+  test("a BM25-only exact match survives the final re-rank", () => {
+    // The regression this pins: mergeRRF's score was dropped at the return,
+    // the caller backfilled `similarity: … ?? 0` for anything the vector arm
+    // had not seen, and MMR used that as relevance. A keyword-only hit
+    // therefore entered the final ranking with relevance 0 and lost to every
+    // semantic match, however weak — the opposite of hybrid retrieval.
+    const exact = fakeMemory("bm25-exact");
+    const weakSemantic = { ...fakeMemory("weak-semantic"), embedding: buf(0, 1, 0) };
+    const all = new Map([[exact.id, exact], [weakSemantic.id, weakSemantic as Memory]]);
+
+    // Keyword arm ranks the exact match first; vector arm only knows the weak one.
+    const merged = mergeRRF([exact], [weakSemantic as Memory], 10, all);
+    expect(merged[0].rrf).toBeGreaterThan(0);
+
+    const picked = applyMMR(merged, vec(1, 0, 0), 1);
+    expect(picked[0].id).toBe("bm25-exact");
+  });
+
+  test("a memory with no embedding no longer jumps the queue", () => {
+    // The loop used to `break` on the first candidate without an embedding and
+    // select it on the spot, so anything stored while the embedder was
+    // unavailable outranked every properly-embedded result.
+    const query = vec(1, 0, 0);
+    const strong = { ...fakeMemory("strong"), embedding: buf(1, 0, 0), similarity: 0.99 };
+    const unembedded = { ...fakeMemory("unembedded"), embedding: null, similarity: 0.1 };
+    const other = { ...fakeMemory("other"), embedding: buf(0, 1, 0), similarity: 0.5 };
+
+    const picked = applyMMR([strong, unembedded, other], query, 2);
+    expect(picked[0].id).toBe("strong");
+    expect(picked.map((m) => m.id)).not.toContain("unembedded");
+  });
+
   test("never returns more than the limit", () => {
     const query = vec(1, 0, 0);
     const items = ["a", "b", "c", "d"].map((id, i) => ({

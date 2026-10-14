@@ -6,8 +6,13 @@
  * to run against existing databases that pre-date the migration system —
  * it becomes a no-op and just inserts the `_migrations` row.
  *
- * Future migrations may use bare `ALTER TABLE` since they will always run
- * against a known-applied baseline.
+ * Future migrations must NOT use a bare `ALTER TABLE`. A known-applied
+ * baseline guarantees the column is absent on the *first* run, which is not
+ * the case that matters: `up()` and the `_migrations` INSERT are separately
+ * auto-committed, so a crash between them leaves the schema changed and the
+ * migration unrecorded, and the retry fails forever on "duplicate column
+ * name". Guard every ADD COLUMN with `PRAGMA table_info` (see 002, 005, 006)
+ * and keep every migration idempotent — runner.ts depends on it.
  */
 
 import type { Client } from "@libsql/client";

@@ -67,14 +67,18 @@ export async function compressSlice(args: CompressSliceArgs): Promise<CompressSl
   await upsertSession(db, { id: sessionId, project_id: projectId });
 
   // 1) Persist the full transcript (INSERT OR IGNORE handles repeats).
-  const transcript = await captureTranscript(db, sessionId, transcriptPath);
-  if (transcript.length === 0) {
+  //    `messages` is already `<private>`-stripped — see captureTranscript.
+  const { messages: transcript, total } = await captureTranscript(db, sessionId, transcriptPath);
+  if (total === 0) {
     return { raw_persisted: 0, memories_stored: 0, duplicates_bumped: 0, new_cursor: 0 };
   }
 
-  // 2) Slice from cursor → end.
+  // 2) Slice from cursor → end. The end comes from the file's message count,
+  //    not from the last surviving message: a private message at the tail is
+  //    dropped from `transcript`, and anchoring the cursor to it would leave
+  //    the window permanently unclosed.
   const cursor = readCursor(sessionId);
-  const endIdx = transcript[transcript.length - 1].msg_idx + 1;
+  const endIdx = total;
   if (cursor >= endIdx) {
     return { raw_persisted: transcript.length, memories_stored: 0, duplicates_bumped: 0, new_cursor: cursor };
   }

@@ -18,10 +18,24 @@ const migration: Migration = {
   name: "005-observation-prompt-id",
 
   async up(client: Client) {
-    await client.executeMultiple(`
-      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
-      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
-    `);
+    // SQLite cannot conditionally ALTER, so check the pragma first — the same
+    // shape migrations 002 and 006 use, and the invariant runner.ts relies on
+    // ("every migration here uses IF NOT EXISTS patterns so a partial run is
+    // safe to retry"). This migration used to be a bare ADD COLUMN: the
+    // column add and the `_migrations` row are separately auto-committed, so
+    // a process killed between them left the column present and the
+    // migration unrecorded, and every later startup died on "duplicate
+    // column name: prompt_id". Hooks swallow startup failures, so memory
+    // would have stayed silently broken forever.
+    const cols = await client.execute("PRAGMA table_info(observations)");
+    const have = new Set(cols.rows.map((r) => r.name as string));
+
+    if (!have.has("prompt_id")) {
+      await client.execute("ALTER TABLE observations ADD COLUMN prompt_id TEXT");
+    }
+    await client.execute(
+      "CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id)"
+    );
   },
 };
 

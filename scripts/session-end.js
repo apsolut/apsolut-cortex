@@ -17,6 +17,12 @@ function envNum(key, fallback) {
   const parsed = Number(val);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
+function envStr(key, fallback) {
+  const val = process.env[key]?.trim();
+  return val ? val : fallback;
+}
+var CORTEX_ANTHROPIC_MODEL = envStr("APSOLUT_CORTEX_ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
+var CORTEX_OLLAMA_MODEL = envStr("APSOLUT_CORTEX_OLLAMA_MODEL", "qwen2.5-coder:7b");
 var CORTEX_DUPLICATE_THRESHOLD = envNum("APSOLUT_CORTEX_DUPLICATE_THRESHOLD", 0.92);
 var CORTEX_DECAY_DAYS = envNum("APSOLUT_CORTEX_DECAY_DAYS", 7);
 var CORTEX_DECAY_OBSERVED = envNum("APSOLUT_CORTEX_DECAY_OBSERVED", 0.95);
@@ -34,6 +40,7 @@ var CORTEX_WEIGHT_CAP = envNum("APSOLUT_CORTEX_WEIGHT_CAP", 3);
 var CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
 var CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
 var CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+var CORTEX_UNPROCESSED_BATCH = envNum("APSOLUT_CORTEX_UNPROCESSED_BATCH", 50);
 var CORTEX_RECALL_TOKEN_BUDGET = envNum("APSOLUT_CORTEX_RECALL_TOKEN_BUDGET", 4000);
 var CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
 var CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
@@ -256,10 +263,12 @@ var _004_memory_tags_default = migration4;
 var migration5 = {
   name: "005-observation-prompt-id",
   async up(client) {
-    await client.executeMultiple(`
-      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
-      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
-    `);
+    const cols = await client.execute("PRAGMA table_info(observations)");
+    const have = new Set(cols.rows.map((r) => r.name));
+    if (!have.has("prompt_id")) {
+      await client.execute("ALTER TABLE observations ADD COLUMN prompt_id TEXT");
+    }
+    await client.execute("CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id)");
   }
 };
 var _005_observation_prompt_id_default = migration5;
@@ -533,32 +542,50 @@ async function upsertSession(db, s) {
 }
 async function getSessionObservations(db, sessionId) {
   const result = await db.execute({
-    sql: "SELECT tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
+    sql: "SELECT id, tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
     args: [sessionId]
   });
   return result.rows.map((r) => ({
+    id: r.id,
     tool_name: r.tool_name,
     content: r.content,
     category: r.category
   }));
 }
-async function getUnprocessedObservations(db, projectId, excludeSessionId) {
+async function getUnprocessedObservations(db, projectId, excludeSessionId, limit = CORTEX_UNPROCESSED_BATCH) {
   const result = await db.execute({
-    sql: "SELECT tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT 50",
-    args: [projectId, excludeSessionId]
+    sql: "SELECT id, tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT ?",
+    args: [projectId, excludeSessionId, limit]
   });
   return result.rows.map((r) => ({
+    id: r.id,
     tool_name: r.tool_name,
     content: r.content,
     category: r.category,
     session_id: r.session_id
   }));
 }
-async function markProjectObservationsPromoted(db, projectId) {
-  await db.execute({
-    sql: "UPDATE observations SET promoted = 1 WHERE project_id = ? AND promoted = 0",
+async function countUnprocessedObservations(db, projectId) {
+  const result = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM observations WHERE project_id = ? AND promoted = 0",
     args: [projectId]
   });
+  return Number(result.rows[0]?.n ?? 0);
+}
+async function markObservationsPromotedByIds(db, ids) {
+  if (ids.length === 0)
+    return 0;
+  const CHUNK = 500;
+  let affected = 0;
+  for (let i = 0;i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const result = await db.execute({
+      sql: `UPDATE observations SET promoted = 1 WHERE id IN (${chunk.map(() => "?").join(",")})`,
+      args: chunk
+    });
+    affected += result.rowsAffected;
+  }
+  return affected;
 }
 async function findDuplicate(db, projectId, embedding, threshold = CORTEX_DUPLICATE_THRESHOLD) {
   const maxDistance = 1 - threshold;
@@ -703,7 +730,17 @@ async function purgeRawMessages(db, retentionDays) {
     return 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
   const result = await db.execute({
-    sql: "DELETE FROM raw_messages WHERE created_at < ?",
+    sql: `DELETE FROM raw_messages
+          WHERE created_at < ?
+            AND NOT EXISTS (
+              SELECT 1 FROM memories m
+              WHERE m.source_session_id = raw_messages.session_id
+                AND m.trust IN ('proven', 'canonical')
+                AND m.source_start_msg_idx IS NOT NULL
+                AND m.source_end_msg_idx IS NOT NULL
+                AND raw_messages.msg_idx >= m.source_start_msg_idx
+                AND raw_messages.msg_idx <  m.source_end_msg_idx
+            )`,
     args: [cutoff]
   });
   return result.rowsAffected;
@@ -772,6 +809,9 @@ import { homedir as homedir2 } from "os";
 var BREAKER_PATH = join2(homedir2(), ".apsolut-cortex", "compression-state.json");
 var MAX_FAILURES = 3;
 var COOLDOWN_MS = 60 * 60 * 1000;
+function providerConfigured() {
+  return Boolean(process.env.ANTHROPIC_API_KEY || process.env.OLLAMA_HOST || process.env.APSOLUT_CORTEX_OLLAMA_MODEL);
+}
 function readBreaker() {
   try {
     if (existsSync2(BREAKER_PATH))
@@ -837,7 +877,7 @@ ${o.content}`).join(`
 
 `);
   const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
+    model: CORTEX_ANTHROPIC_MODEL,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [
@@ -856,7 +896,7 @@ ${obsText}`
 }
 async function compressWithOllama(observations, project) {
   const OLLAMA_URL = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-  const MODEL = process.env.APSOLUT_CORTEX_OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  const MODEL = CORTEX_OLLAMA_MODEL;
   const obsText = observations.map((o, i) => `[${i + 1}]${o.tool_name ? ` Tool: ${o.tool_name}` : ""}
 ${o.content}`).join(`
 
@@ -930,7 +970,7 @@ async function compressSession(observations, project) {
     return { memories: [], summary: "" };
   }
   if (isBreakerOpen()) {
-    console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
+    console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h). " + "If you just fixed the provider, run: apsolut-cortex db reset-breaker");
     return null;
   }
   if (process.env.ANTHROPIC_API_KEY) {
@@ -949,7 +989,8 @@ async function compressSession(observations, project) {
     console.error("[apsolut-cortex] Used Ollama for compression.");
     return result;
   } catch (e) {
-    recordFailure();
+    if (providerConfigured())
+      recordFailure();
     const msg = [
       "",
       "╔══════════════════════════════════════════════════════════════╗",
@@ -1378,6 +1419,9 @@ function clearCursor(sessionId) {
     } catch {}
   }
 }
+function newToken() {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 function tryAcquireLock(sessionId) {
   ensureDir();
   const path = lockPath(sessionId);
@@ -1389,7 +1433,7 @@ function tryAcquireLock(sessionId) {
           unlinkSync2(path);
         } catch {}
       } else {
-        return false;
+        return null;
       }
     } catch {
       try {
@@ -1397,23 +1441,38 @@ function tryAcquireLock(sessionId) {
       } catch {}
     }
   }
+  const token = newToken();
   try {
-    writeFileSync3(path, String(process.pid), { flag: "wx" });
-    return true;
+    writeFileSync3(path, token, { flag: "wx" });
+    return token;
   } catch {
-    return false;
+    return null;
   }
 }
-function releaseLock2(sessionId) {
-  const path = lockPath(sessionId);
-  if (existsSync4(path)) {
-    try {
-      unlinkSync2(path);
-    } catch {}
+async function acquireLockWaiting(sessionId, timeoutMs, pollMs = 200) {
+  const deadline = Date.now() + timeoutMs;
+  for (;; ) {
+    const token = tryAcquireLock(sessionId);
+    if (token)
+      return token;
+    if (Date.now() >= deadline)
+      return null;
+    await new Promise((r) => setTimeout(r, pollMs));
   }
+}
+function releaseLock2(sessionId, token) {
+  if (!token)
+    return;
+  const path = lockPath(sessionId);
+  if (!existsSync4(path))
+    return;
+  try {
+    if (readFileSync2(path, "utf-8").trim() !== token)
+      return;
+    unlinkSync2(path);
+  } catch {}
 }
 function clearAllForSession(sessionId) {
-  releaseLock2(sessionId);
   clearCursor(sessionId);
   for (const suffix of [".scan", ".injected.json"]) {
     const path = join4(BUFFER_DIR, `${sessionId}${suffix}`);
@@ -1484,8 +1543,10 @@ function stripPrivate(text) {
   let start;
   while ((start = result.toLowerCase().indexOf("<private>")) !== -1) {
     const end = result.toLowerCase().indexOf("</private>", start);
-    if (end === -1)
+    if (end === -1) {
+      result = result.slice(0, start);
       break;
+    }
     result = result.slice(0, start) + result.slice(end + "</private>".length);
   }
   const stripped = result.trim();
@@ -1547,24 +1608,35 @@ async function persistRawMessages(db, sessionId, messages, now = Date.now()) {
   }
   return inserted;
 }
+function sanitizeTranscript(messages) {
+  const out = [];
+  for (const m of messages) {
+    const content = stripPrivate(m.content);
+    if (content === null)
+      continue;
+    out.push({ ...m, content });
+  }
+  return out;
+}
 async function captureTranscript(db, sessionId, transcriptPath) {
   const transcript = readTranscript(transcriptPath);
   if (transcript.length === 0)
-    return [];
-  await persistRawMessages(db, sessionId, transcript);
-  return transcript;
+    return { messages: [], total: 0 };
+  const safe = sanitizeTranscript(transcript);
+  await persistRawMessages(db, sessionId, safe);
+  return { messages: safe, total: transcript.length };
 }
 
 // src/compress-runner.ts
 async function compressSlice(args) {
   const { db, sessionId, projectId, projectName, transcriptPath, source } = args;
   await upsertSession(db, { id: sessionId, project_id: projectId });
-  const transcript = await captureTranscript(db, sessionId, transcriptPath);
-  if (transcript.length === 0) {
+  const { messages: transcript, total } = await captureTranscript(db, sessionId, transcriptPath);
+  if (total === 0) {
     return { raw_persisted: 0, memories_stored: 0, duplicates_bumped: 0, new_cursor: 0 };
   }
   const cursor = readCursor(sessionId);
-  const endIdx = transcript[transcript.length - 1].msg_idx + 1;
+  const endIdx = total;
   if (cursor >= endIdx) {
     return { raw_persisted: transcript.length, memories_stored: 0, duplicates_bumped: 0, new_cursor: cursor };
   }
@@ -1762,6 +1834,7 @@ async function main() {
     const currentObs = await getSessionObservations(db, sessionId);
     const staleObs = await getUnprocessedObservations(db, project.id, sessionId);
     const observations = [...currentObs, ...staleObs];
+    const observationIds = observations.map((o) => o.id);
     const currentHashes = TRACKED_FILES.map((f) => ({ path: f, hash: hashFile(join5(cwd, f)) })).filter((h) => h.hash !== null);
     const changedFiles = await diffFileHashes(db, project.id, currentHashes);
     if (currentHashes.length > 0)
@@ -1807,8 +1880,8 @@ async function main() {
         });
         stored++;
       }
-      if (observations.length > 0 && !compressionFailed) {
-        await markProjectObservationsPromoted(tx, project.id);
+      if (observationIds.length > 0 && !compressionFailed) {
+        await markObservationsPromotedByIds(tx, observationIds);
       }
       await upsertSession(tx, {
         id: sessionId,
@@ -1820,6 +1893,10 @@ async function main() {
       await tx.commit();
     } finally {
       tx.close();
+    }
+    const backlog = await countUnprocessedObservations(db, project.id);
+    if (backlog > 0) {
+      console.error(`[apsolut-cortex] ${backlog} observation(s) still awaiting compression — the next session picks up the next batch`);
     }
     const { pruned } = await decayAndPrune(db, project.id);
     if (pruned > 0) {
@@ -1834,26 +1911,29 @@ async function main() {
       console.error(`[apsolut-cortex] raw retention purge skipped: ${e}`);
     }
     if (transcriptPath) {
-      const got = tryAcquireLock(sessionId);
-      try {
-        const result = await compressSlice({
-          db,
-          sessionId,
-          projectId: project.id,
-          projectName: project.name,
-          transcriptPath,
-          source: "session-end"
-        });
-        if (result.failed)
-          compressionFailed = true;
-        if (result.memories_stored > 0 || result.raw_persisted > 0) {
-          console.error(`[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`);
+      const token = await acquireLockWaiting(sessionId, 1e4);
+      if (!token) {
+        console.error("[apsolut-cortex] SessionEnd tail skipped — a compression worker still holds the lock; its run covers this window");
+      } else {
+        try {
+          const result = await compressSlice({
+            db,
+            sessionId,
+            projectId: project.id,
+            projectName: project.name,
+            transcriptPath,
+            source: "session-end"
+          });
+          if (result.failed)
+            compressionFailed = true;
+          if (result.memories_stored > 0 || result.raw_persisted > 0) {
+            console.error(`[apsolut-cortex] SessionEnd tail: ${result.raw_persisted} raw msgs, ${result.memories_stored} memories`);
+          }
+        } catch (e) {
+          console.error(`[apsolut-cortex] SessionEnd tail compression failed: ${e}`);
+        } finally {
+          releaseLock2(sessionId, token);
         }
-      } catch (e) {
-        console.error(`[apsolut-cortex] SessionEnd tail compression failed: ${e}`);
-      } finally {
-        if (got)
-          releaseLock2(sessionId);
       }
     }
     if (compressionFailed) {

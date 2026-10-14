@@ -13,6 +13,7 @@ import {
   CORTEX_DECAY_OBSERVED,
   CORTEX_DECAY_VALIDATED,
   CORTEX_PRUNE_WEIGHT,
+  CORTEX_UNPROCESSED_BATCH,
 } from "./config.js";
 import { runMigrations } from "./migrations/runner.js";
 import { getDbKey } from "./keyring.js";
@@ -240,31 +241,35 @@ export async function getRecentSummaries(
 
 // ── Observations ─────────────────────────────────────────────────────────────
 
+/** Returns the id of the inserted observation. */
 export async function insertObservation(
   db: DbConn,
   obs: { session_id: string; project_id: string; tool_name?: string;
          content: string; category?: string; prompt_id?: string }
-): Promise<void> {
+): Promise<string> {
+  const id = crypto.randomUUID();
   await db.execute({
     sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at, prompt_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      crypto.randomUUID(), obs.session_id, obs.project_id,
+      id, obs.session_id, obs.project_id,
       obs.tool_name ?? null, obs.content, obs.category ?? null, Date.now(),
       obs.prompt_id ?? null,
     ],
   });
+  return id;
 }
 
 export async function getSessionObservations(
   db: DbConn,
   sessionId: string
-): Promise<Array<{ tool_name: string | null; content: string; category: string | null }>> {
+): Promise<Array<{ id: string; tool_name: string | null; content: string; category: string | null }>> {
   const result = await db.execute({
-    sql: "SELECT tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
+    sql: "SELECT id, tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
     args: [sessionId],
   });
   return result.rows.map((r) => ({
+    id: r.id as string,
     tool_name: r.tool_name as string | null,
     content: r.content as string,
     category: r.category as string | null,
@@ -274,18 +279,32 @@ export async function getSessionObservations(
 export async function getUnprocessedObservations(
   db: DbConn,
   projectId: string,
-  excludeSessionId: string
-): Promise<Array<{ tool_name: string | null; content: string; category: string | null; session_id: string }>> {
+  excludeSessionId: string,
+  limit: number = CORTEX_UNPROCESSED_BATCH
+): Promise<Array<{ id: string; tool_name: string | null; content: string; category: string | null; session_id: string }>> {
   const result = await db.execute({
-    sql: "SELECT tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT 50",
-    args: [projectId, excludeSessionId],
+    sql: "SELECT id, tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT ?",
+    args: [projectId, excludeSessionId, limit],
   });
   return result.rows.map((r) => ({
+    id: r.id as string,
     tool_name: r.tool_name as string | null,
     content: r.content as string,
     category: r.category as string | null,
     session_id: r.session_id as string,
   }));
+}
+
+/** Count observations still awaiting compression, for diagnostics. */
+export async function countUnprocessedObservations(
+  db: DbConn,
+  projectId: string
+): Promise<number> {
+  const result = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM observations WHERE project_id = ? AND promoted = 0",
+    args: [projectId],
+  });
+  return Number(result.rows[0]?.n ?? 0);
 }
 
 export async function markObservationsPromoted(
@@ -298,14 +317,34 @@ export async function markObservationsPromoted(
   });
 }
 
-export async function markProjectObservationsPromoted(
+/**
+ * Mark exactly the observations that were handed to the compressor.
+ *
+ * Replaces a project-wide `UPDATE … WHERE promoted = 0`, which flagged the
+ * entire backlog as compressed even though recovery only ever loads
+ * UNPROCESSED_BATCH of it. A project sitting on 174 unprocessed observations
+ * lost ~124 of them, unseen, the first time a compression succeeded — and
+ * anything inserted by a concurrent hook between the SELECT and the UPDATE
+ * went the same way.
+ */
+export async function markObservationsPromotedByIds(
   db: DbConn,
-  projectId: string
-): Promise<void> {
-  await db.execute({
-    sql: "UPDATE observations SET promoted = 1 WHERE project_id = ? AND promoted = 0",
-    args: [projectId],
-  });
+  ids: string[]
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  // Chunked: SQLite's default parameter ceiling is 999 and a long-idle
+  // project's backlog can exceed it.
+  const CHUNK = 500;
+  let affected = 0;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const result = await db.execute({
+      sql: `UPDATE observations SET promoted = 1 WHERE id IN (${chunk.map(() => "?").join(",")})`,
+      args: chunk,
+    });
+    affected += result.rowsAffected;
+  }
+  return affected;
 }
 
 // ── Memories ─────────────────────────────────────────────────────────────────
@@ -609,33 +648,75 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return d === 0 ? 0 : dot / d;
 }
 
+/**
+ * Reciprocal-rank fusion over two ranked lists.
+ *
+ * Returns each surviving item with its fused score attached, normalized to
+ * (0, 1] against the best score in the batch. The score used to be discarded
+ * at the return, which made the fusion decorative: the caller handed the
+ * ordered ids to MMR, which re-ranked them by vector similarity alone, so a
+ * BM25-only exact keyword match (similarity defaulted to 0) sank below every
+ * weaker semantic match. Carrying the score lets MMR use the thing that was
+ * actually computed.
+ */
 export function mergeRRF<T extends { id: string }>(
   list1: T[],
   list2: T[],
   limit: number,
   allItems: Map<string, T>
-): T[] {
+): Array<T & { rrf: number }> {
   const k = CORTEX_RRF_K;
   const scores = new Map<string, number>();
   list1.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
   list2.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
-  return [...scores.entries()]
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, limit)
-    .map(([id]) => allItems.get(id)!)
-    .filter(Boolean);
+
+  const ordered = [...scores.entries()].sort(([, a], [, b]) => b - a);
+  const best = ordered[0]?.[1] ?? 0;
+
+  const out: Array<T & { rrf: number }> = [];
+  for (const [id, score] of ordered.slice(0, limit)) {
+    const item = allItems.get(id);
+    if (!item) continue;
+    out.push({ ...item, rrf: best > 0 ? score / best : 0 });
+  }
+  return out;
 }
 
+/**
+ * Maximal-marginal-relevance re-rank: pick the most relevant candidate that
+ * is least like what has already been picked.
+ *
+ * Relevance prefers the fused RRF score when present, falling back to vector
+ * similarity and then to a computed cosine. Embeddings are used for the
+ * diversity penalty regardless — that is the job they are actually good at
+ * here.
+ *
+ * A candidate with no embedding no longer short-circuits the loop. It used to
+ * `break` on the first one it saw and select it immediately, which meant any
+ * memory stored while the embedder was unavailable jumped ahead of every
+ * properly-embedded result. It now competes on relevance with a zero
+ * diversity penalty, since there is nothing to measure similarity against.
+ */
 export function applyMMR(
-  candidates: Array<Memory & { similarity?: number }>,
+  candidates: Array<Memory & { similarity?: number; rrf?: number }>,
   queryEmb: Float32Array | null,
   limit: number,
   lambda = CORTEX_MMR_LAMBDA
 ): Memory[] {
-  if (!queryEmb || candidates.length <= limit) return candidates.slice(0, limit);
+  if (candidates.length <= limit) return candidates.slice(0, limit);
 
-  const selected: Memory[] = [];
+  const selected: Array<Memory & { similarity?: number; rrf?: number }> = [];
   const remaining = [...candidates];
+
+  const embOf = (m: Memory): Float32Array | null =>
+    m.embedding ? new Float32Array(m.embedding as ArrayBuffer) : null;
+
+  const relevanceOf = (cand: Memory & { similarity?: number; rrf?: number }): number => {
+    if (typeof cand.rrf === "number") return cand.rrf;
+    if (typeof cand.similarity === "number") return cand.similarity;
+    const e = embOf(cand);
+    return queryEmb && e ? cosineSimilarity(queryEmb, e) : 0;
+  };
 
   while (selected.length < limit && remaining.length > 0) {
     let bestIdx = 0;
@@ -643,17 +724,16 @@ export function applyMMR(
 
     for (let i = 0; i < remaining.length; i++) {
       const cand = remaining[i];
-      const candEmb = cand.embedding
-        ? new Float32Array(cand.embedding as ArrayBuffer)
-        : null;
-      if (!candEmb) { bestIdx = i; break; }
+      const candEmb = embOf(cand);
 
-      const relevance = (cand as Memory & { similarity?: number }).similarity ?? cosineSimilarity(queryEmb, candEmb);
-      const maxSim = selected.reduce((max, s) => {
-        if (!s.embedding) return max;
-        const sim = cosineSimilarity(candEmb, new Float32Array(s.embedding as ArrayBuffer));
-        return Math.max(max, sim);
-      }, 0);
+      const relevance = relevanceOf(cand);
+      const maxSim = candEmb
+        ? selected.reduce((max, s) => {
+            const se = embOf(s);
+            if (!se) return max;
+            return Math.max(max, cosineSimilarity(candEmb, se));
+          }, 0)
+        : 0;
 
       const score = lambda * relevance - (1 - lambda) * maxSim;
       if (score > bestScore) { bestScore = score; bestIdx = i; }
@@ -733,6 +813,21 @@ export async function deleteMemory(
  * Age-based and unconditional: a memory whose source window has aged out
  * still resolves, it just reports the window as pruned.
  */
+/**
+ * Age out raw conversation text, except where a memory the user has vouched
+ * for still points at it.
+ *
+ * `proven` and `canonical` memories are explicitly exempt from decay and from
+ * pruning — the user promoted them on purpose. Their source ranges were not
+ * exempt from anything, so `memory_recall` on a two-year-old canonical
+ * memory degraded to "window was pruned" while the memory itself was
+ * protected. The two protections now agree.
+ *
+ * Note for the comments this replaces: `config.ts` and migration 003 both
+ * claimed the purge only touched rows whose memories were `is_pinned`, and
+ * that until then "all rows are retained". Neither was true — `is_pinned`
+ * does not exist in any migration, and this deleted unconditionally by age.
+ */
 export async function purgeRawMessages(
   db: DbConn,
   retentionDays: number
@@ -740,7 +835,17 @@ export async function purgeRawMessages(
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
   const result = await db.execute({
-    sql: "DELETE FROM raw_messages WHERE created_at < ?",
+    sql: `DELETE FROM raw_messages
+          WHERE created_at < ?
+            AND NOT EXISTS (
+              SELECT 1 FROM memories m
+              WHERE m.source_session_id = raw_messages.session_id
+                AND m.trust IN ('proven', 'canonical')
+                AND m.source_start_msg_idx IS NOT NULL
+                AND m.source_end_msg_idx IS NOT NULL
+                AND raw_messages.msg_idx >= m.source_start_msg_idx
+                AND raw_messages.msg_idx <  m.source_end_msg_idx
+            )`,
     args: [cutoff],
   });
   return result.rowsAffected;
@@ -792,6 +897,63 @@ export async function decayAndPrune(
     decayed: decayResult.rowsAffected,
     pruned: pruneResult.rowsAffected,
   };
+}
+
+// ── Embedding repair ────────────────────────────────────────────────────────
+
+/**
+ * Memories stored without an embedding.
+ *
+ * `embed()` loads MiniLM from the network on first use, inside a hook. When
+ * that fails — offline, proxy, cold cache on a locked-down machine — the
+ * caller logs to stderr and stores the memory with a NULL embedding. Those
+ * rows are invisible to vector search and to duplicate detection, forever,
+ * and nothing ever counted or repaired them.
+ */
+export async function countMemoriesMissingEmbedding(
+  db: DbConn,
+  projectId?: string
+): Promise<number> {
+  const result = projectId
+    ? await db.execute({
+        sql: "SELECT COUNT(*) AS n FROM memories WHERE embedding IS NULL AND project_id = ?",
+        args: [projectId],
+      })
+    : await db.execute("SELECT COUNT(*) AS n FROM memories WHERE embedding IS NULL");
+  return Number(result.rows[0]?.n ?? 0);
+}
+
+export async function listMemoriesMissingEmbedding(
+  db: DbConn,
+  limit: number,
+  projectId?: string
+): Promise<Array<{ id: string; content: string; context: string | null }>> {
+  const result = projectId
+    ? await db.execute({
+        sql: "SELECT id, content, context FROM memories WHERE embedding IS NULL AND project_id = ? ORDER BY created_at ASC LIMIT ?",
+        args: [projectId, limit],
+      })
+    : await db.execute({
+        sql: "SELECT id, content, context FROM memories WHERE embedding IS NULL ORDER BY created_at ASC LIMIT ?",
+        args: [limit],
+      });
+  return result.rows.map((r) => ({
+    id: r.id as string,
+    content: r.content as string,
+    context: r.context as string | null,
+  }));
+}
+
+export async function setMemoryEmbedding(
+  db: DbConn,
+  id: string,
+  embedding: Float32Array
+): Promise<boolean> {
+  const result = await db.execute({
+    sql: "UPDATE memories SET embedding = vector(?) WHERE id = ?",
+    args: [vecToSql(embedding), id],
+  });
+  return result.rowsAffected > 0;
 }
 
 // ── File Hashes ─────────────────────────────────────────────────────────────

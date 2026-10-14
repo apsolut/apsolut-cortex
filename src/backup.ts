@@ -75,10 +75,22 @@ function ensureBackupDir(): void {
 }
 
 /**
- * Physical file copy of memory.db to backup/<label>-<ts>.db. Returns the
+ * Consistent snapshot of memory.db to backup/<label>-<ts>.db. Returns the
  * absolute path of the snapshot. Throws if the source does not exist.
+ *
+ * Uses `VACUUM INTO`, which asks SQLite itself to write a fully-checkpointed
+ * copy from inside a read transaction. The previous implementation copied
+ * `memory.db` and then best-effort copied `memory.db-wal` — two files read at
+ * two different instants, while hooks, detached compression workers and the
+ * MCP server are all writing. A snapshot could therefore contain a main file
+ * from before a transaction and a WAL from after it, and a failed WAL copy
+ * was swallowed and still reported success. `VACUUM INTO` also needs no
+ * sidecar, so a restored snapshot has nothing to reassemble.
+ *
+ * Falls back to the file copy if VACUUM INTO is unavailable — better a
+ * possibly-torn backup than no backup, but say so.
  */
-export function snapshot(label = "manual"): string {
+export async function snapshot(label = "manual"): Promise<string> {
   if (!existsSync(DB_PATH)) {
     throw new Error(
       `[apsolut-cortex] no DB at ${DB_PATH} — nothing to back up`
@@ -86,15 +98,41 @@ export function snapshot(label = "manual"): string {
   }
   ensureBackupDir();
   const dest = join(BACKUP_DIR, `${label}-${timestamp()}.db`);
-  copyFileSync(DB_PATH, dest);
-  // WAL mode (migration 001) can leave committed rows in the -wal sidecar
-  // when the last writer exited without a clean close. Copy it alongside
-  // so the snapshot doesn't silently miss those transactions.
-  const wal = `${DB_PATH}-wal`;
-  if (existsSync(wal)) {
-    try { copyFileSync(wal, `${dest}-wal`); } catch { /* best-effort */ }
+  // getDb() applies the encryption key when one is set, so an encrypted
+  // source stays readable. Note the VACUUM INTO target is written without a
+  // key — see README on encryption.
+  const { getDb } = await import("./db.js");
+  return snapshotFrom(await getDb(), DB_PATH, dest);
+}
+
+/**
+ * Snapshot an open database to `dest`. Exported with explicit arguments so
+ * the consistency guarantee can be tested against an isolated database
+ * instead of the user's real one.
+ */
+export async function snapshotFrom(
+  db: Client,
+  sourcePath: string,
+  dest: string
+): Promise<string> {
+  try {
+    await db.execute({ sql: "VACUUM INTO ?", args: [dest] });
+    if (existsSync(dest)) return dest;
+    throw new Error("VACUUM INTO produced no file");
+  } catch (e) {
+    if (existsSync(dest)) {
+      try { unlinkSync(dest); } catch { /* partial target */ }
+    }
+    process.stderr.write(
+      `[apsolut-cortex] consistent snapshot unavailable (${e instanceof Error ? e.message : e}); falling back to file copy\n`
+    );
+    copyFileSync(sourcePath, dest);
+    const wal = `${sourcePath}-wal`;
+    if (existsSync(wal)) {
+      copyFileSync(wal, `${dest}-wal`);
+    }
+    return dest;
   }
-  return dest;
 }
 
 export interface BackupListEntry {
@@ -123,13 +161,13 @@ export function listBackups(): BackupListEntry[] {
  * Always takes a pre-restore safety snapshot first so a wrong --yes can
  * be undone.
  */
-export function restore(snapshotPath: string): { restored: string; safetyBackup: string | null } {
+export async function restore(snapshotPath: string): Promise<{ restored: string; safetyBackup: string | null }> {
   if (!existsSync(snapshotPath)) {
     throw new Error(`[apsolut-cortex] snapshot not found: ${snapshotPath}`);
   }
   let safetyBackup: string | null = null;
   if (existsSync(DB_PATH)) {
-    safetyBackup = snapshot("pre-restore");
+    safetyBackup = await snapshot("pre-restore");
   }
   // copyFile + rename pattern for atomicity on Windows where rename over an
   // open file may fail. copyFile to a tmp path, then rename.
@@ -294,7 +332,7 @@ export async function reencryptPathToKey(
  * backup is preserved.
  */
 export async function reencryptToKey(encryptionKey: string): Promise<ReencryptResult> {
-  const sourceBackup = snapshot("pre-encrypt");
+  const sourceBackup = await snapshot("pre-encrypt");
   const { rows_copied } = await reencryptPathToKey(DB_PATH, encryptionKey);
   return { source_backup: sourceBackup, rows_copied, new_db_path: DB_PATH };
 }

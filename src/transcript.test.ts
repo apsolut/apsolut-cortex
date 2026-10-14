@@ -145,9 +145,40 @@ describe("persistRawMessages + captureTranscript", () => {
     ]);
 
     const t = await captureTranscript(db, "s-1", path);
-    expect(t.length).toBe(2);
+    expect(t.messages.length).toBe(2);
+    expect(t.total).toBe(2);
     const rows = await db.execute("SELECT content FROM raw_messages WHERE session_id='s-1' ORDER BY msg_idx");
     expect(rows.rows.map((r) => r.content as string)).toEqual(["u1", "a1"]);
+
+    db.close();
+  });
+
+  test("captureTranscript returns SANITIZED content — this is what reaches the LLM", async () => {
+    // The compression path forwards exactly what this returns to Anthropic or
+    // Ollama. Returning raw content here sent `<private>` text off the machine
+    // and let it be summarized into a stored memory.
+    const db = await freshDb();
+    const path = writeTranscript("capture-private", [
+      { role: "user", content: "deploy the thing" },
+      { role: "user", content: "key is <private>sk-ant-SECRET-abc123</private> ok" },
+      { role: "user", content: "<private>entirely secret</private>" },
+    ]);
+
+    const t = await captureTranscript(db, "s-2", path);
+
+    const payload = t.messages.map((m) => m.content).join("\n");
+    expect(payload).not.toContain("sk-ant-SECRET-abc123");
+    expect(payload).not.toContain("entirely secret");
+    expect(payload).not.toContain("<private>");
+    expect(payload).toContain("deploy the thing");
+
+    // The fully-private message is dropped, but `total` still counts it so the
+    // compression cursor can advance past it.
+    expect(t.messages.length).toBe(2);
+    expect(t.total).toBe(3);
+
+    // msg_idx survives sanitizing — source ranges stay meaningful.
+    expect(t.messages.map((m) => m.msg_idx)).toEqual([0, 1]);
 
     db.close();
   });

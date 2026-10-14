@@ -26,8 +26,10 @@ function stripPrivate(text) {
   let start;
   while ((start = result.toLowerCase().indexOf("<private>")) !== -1) {
     const end = result.toLowerCase().indexOf("</private>", start);
-    if (end === -1)
+    if (end === -1) {
+      result = result.slice(0, start);
       break;
+    }
     result = result.slice(0, start) + result.slice(end + "</private>".length);
   }
   const stripped = result.trim();
@@ -44,11 +46,14 @@ __export(exports_buffer, {
   readScanCursor: () => readScanCursor,
   readCursor: () => readCursor,
   readBuffer: () => readBuffer,
+  lockHeld: () => lockHeld,
   listBufferedSessions: () => listBufferedSessions,
+  forceClearLock: () => forceClearLock,
   drainAndDelete: () => drainAndDelete,
   clearCursor: () => clearCursor,
   clearAllForSession: () => clearAllForSession,
   appendObservation: () => appendObservation,
+  acquireLockWaiting: () => acquireLockWaiting,
   BUFFER_DIR: () => BUFFER_DIR
 });
 import {
@@ -146,6 +151,9 @@ function writeScanCursor(sessionId, msgCount) {
     writeFileSync(join(BUFFER_DIR, `${sessionId}.scan`), String(msgCount));
   } catch {}
 }
+function newToken() {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 function tryAcquireLock(sessionId) {
   ensureDir();
   const path = lockPath(sessionId);
@@ -157,7 +165,7 @@ function tryAcquireLock(sessionId) {
           unlinkSync(path);
         } catch {}
       } else {
-        return false;
+        return null;
       }
     } catch {
       try {
@@ -165,14 +173,48 @@ function tryAcquireLock(sessionId) {
       } catch {}
     }
   }
+  const token = newToken();
   try {
-    writeFileSync(path, String(process.pid), { flag: "wx" });
-    return true;
+    writeFileSync(path, token, { flag: "wx" });
+    return token;
+  } catch {
+    return null;
+  }
+}
+async function acquireLockWaiting(sessionId, timeoutMs, pollMs = 200) {
+  const deadline = Date.now() + timeoutMs;
+  for (;; ) {
+    const token = tryAcquireLock(sessionId);
+    if (token)
+      return token;
+    if (Date.now() >= deadline)
+      return null;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
+function lockHeld(sessionId) {
+  const path = lockPath(sessionId);
+  if (!existsSync(path))
+    return false;
+  try {
+    return Date.now() - statSync(path).mtimeMs <= LOCK_TTL_MS;
   } catch {
     return false;
   }
 }
-function releaseLock(sessionId) {
+function releaseLock(sessionId, token) {
+  if (!token)
+    return;
+  const path = lockPath(sessionId);
+  if (!existsSync(path))
+    return;
+  try {
+    if (readFileSync(path, "utf-8").trim() !== token)
+      return;
+    unlinkSync(path);
+  } catch {}
+}
+function forceClearLock(sessionId) {
   const path = lockPath(sessionId);
   if (existsSync(path)) {
     try {
@@ -181,7 +223,6 @@ function releaseLock(sessionId) {
   }
 }
 function clearAllForSession(sessionId) {
-  releaseLock(sessionId);
   clearCursor(sessionId);
   for (const suffix of [".scan", ".injected.json"]) {
     const path = join(BUFFER_DIR, `${sessionId}${suffix}`);
@@ -211,8 +252,14 @@ function envNum(key, fallback) {
   const parsed = Number(val);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
-var CORTEX_DUPLICATE_THRESHOLD, CORTEX_DECAY_DAYS, CORTEX_DECAY_OBSERVED, CORTEX_DECAY_VALIDATED, CORTEX_PRUNE_WEIGHT, CORTEX_RRF_K, CORTEX_MMR_LAMBDA, CORTEX_SEARCH_LIMIT_MAX, CORTEX_SEARCH_MULTIPLIER, CORTEX_WEIGHT_ALPHA, CORTEX_PROMOTE_WEIGHT, CORTEX_PROMOTE_USES, CORTEX_BUMP_BOOST, CORTEX_WEIGHT_CAP, CORTEX_CORRECTION_WEIGHT, CORTEX_MANUAL_WEIGHT, CORTEX_RAW_RETENTION_DAYS, CORTEX_RECALL_TOKEN_BUDGET, CORTEX_OBSERVE_THRESHOLD, CORTEX_OBSERVE_BLOCK_MULT, CORTEX_REFLECT_THRESHOLD;
+function envStr(key, fallback) {
+  const val = process.env[key]?.trim();
+  return val ? val : fallback;
+}
+var CORTEX_ANTHROPIC_MODEL, CORTEX_OLLAMA_MODEL, CORTEX_DUPLICATE_THRESHOLD, CORTEX_DECAY_DAYS, CORTEX_DECAY_OBSERVED, CORTEX_DECAY_VALIDATED, CORTEX_PRUNE_WEIGHT, CORTEX_RRF_K, CORTEX_MMR_LAMBDA, CORTEX_SEARCH_LIMIT_MAX, CORTEX_SEARCH_MULTIPLIER, CORTEX_WEIGHT_ALPHA, CORTEX_PROMOTE_WEIGHT, CORTEX_PROMOTE_USES, CORTEX_BUMP_BOOST, CORTEX_WEIGHT_CAP, CORTEX_CORRECTION_WEIGHT, CORTEX_MANUAL_WEIGHT, CORTEX_RAW_RETENTION_DAYS, CORTEX_UNPROCESSED_BATCH, CORTEX_RECALL_TOKEN_BUDGET, CORTEX_OBSERVE_THRESHOLD, CORTEX_OBSERVE_BLOCK_MULT, CORTEX_REFLECT_THRESHOLD;
 var init_config = __esm(() => {
+  CORTEX_ANTHROPIC_MODEL = envStr("APSOLUT_CORTEX_ANTHROPIC_MODEL", "claude-haiku-4-5-20251001");
+  CORTEX_OLLAMA_MODEL = envStr("APSOLUT_CORTEX_OLLAMA_MODEL", "qwen2.5-coder:7b");
   CORTEX_DUPLICATE_THRESHOLD = envNum("APSOLUT_CORTEX_DUPLICATE_THRESHOLD", 0.92);
   CORTEX_DECAY_DAYS = envNum("APSOLUT_CORTEX_DECAY_DAYS", 7);
   CORTEX_DECAY_OBSERVED = envNum("APSOLUT_CORTEX_DECAY_OBSERVED", 0.95);
@@ -230,6 +277,7 @@ var init_config = __esm(() => {
   CORTEX_CORRECTION_WEIGHT = envNum("APSOLUT_CORTEX_CORRECTION_WEIGHT", 1.5);
   CORTEX_MANUAL_WEIGHT = envNum("APSOLUT_CORTEX_MANUAL_WEIGHT", 1.2);
   CORTEX_RAW_RETENTION_DAYS = envNum("APSOLUT_CORTEX_RAW_RETENTION_DAYS", 90);
+  CORTEX_UNPROCESSED_BATCH = envNum("APSOLUT_CORTEX_UNPROCESSED_BATCH", 50);
   CORTEX_RECALL_TOKEN_BUDGET = envNum("APSOLUT_CORTEX_RECALL_TOKEN_BUDGET", 4000);
   CORTEX_OBSERVE_THRESHOLD = envNum("APSOLUT_CORTEX_OBSERVE_THRESHOLD", 30000);
   CORTEX_OBSERVE_BLOCK_MULT = envNum("APSOLUT_CORTEX_OBSERVE_BLOCK_MULT", 1.2);
@@ -423,10 +471,12 @@ var init_005_observation_prompt_id = __esm(() => {
   migration5 = {
     name: "005-observation-prompt-id",
     async up(client) {
-      await client.executeMultiple(`
-      ALTER TABLE observations ADD COLUMN prompt_id TEXT;
-      CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id);
-    `);
+      const cols = await client.execute("PRAGMA table_info(observations)");
+      const have = new Set(cols.rows.map((r) => r.name));
+      if (!have.has("prompt_id")) {
+        await client.execute("ALTER TABLE observations ADD COLUMN prompt_id TEXT");
+      }
+      await client.execute("CREATE INDEX IF NOT EXISTS idx_obs_prompt ON observations(prompt_id)");
     }
   };
   _005_observation_prompt_id_default = migration5;
@@ -651,13 +701,15 @@ __export(exports_db, {
   upsertProject: () => upsertProject,
   updateWeight: () => updateWeight,
   snapshotFileHashes: () => snapshotFileHashes,
+  setMemoryEmbedding: () => setMemoryEmbedding,
   searchVector: () => searchVector,
   searchGrep: () => searchGrep,
   searchBM25: () => searchBM25,
   purgeRawMessages: () => purgeRawMessages,
   mergeRRF: () => mergeRRF,
-  markProjectObservationsPromoted: () => markProjectObservationsPromoted,
+  markObservationsPromotedByIds: () => markObservationsPromotedByIds,
   markObservationsPromoted: () => markObservationsPromoted,
+  listMemoriesMissingEmbedding: () => listMemoriesMissingEmbedding,
   insertRawMessage: () => insertRawMessage,
   insertObservation: () => insertObservation,
   insertMemory: () => insertMemory,
@@ -671,6 +723,8 @@ __export(exports_db, {
   diffFileHashes: () => diffFileHashes,
   deleteMemory: () => deleteMemory,
   decayAndPrune: () => decayAndPrune,
+  countUnprocessedObservations: () => countUnprocessedObservations,
+  countMemoriesMissingEmbedding: () => countMemoriesMissingEmbedding,
   cosineSimilarity: () => cosineSimilarity,
   bumpWeight: () => bumpWeight,
   applyMMR: () => applyMMR,
@@ -777,11 +831,12 @@ async function getRecentSummaries(db, projectId, limit = 3) {
   return result.rows.map((r) => r.summary);
 }
 async function insertObservation(db, obs) {
+  const id = crypto.randomUUID();
   await db.execute({
     sql: `INSERT INTO observations (id, session_id, project_id, tool_name, content, category, created_at, prompt_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      crypto.randomUUID(),
+      id,
       obs.session_id,
       obs.project_id,
       obs.tool_name ?? null,
@@ -791,29 +846,39 @@ async function insertObservation(db, obs) {
       obs.prompt_id ?? null
     ]
   });
+  return id;
 }
 async function getSessionObservations(db, sessionId) {
   const result = await db.execute({
-    sql: "SELECT tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
+    sql: "SELECT id, tool_name, content, category FROM observations WHERE session_id = ? AND promoted = 0 ORDER BY created_at ASC",
     args: [sessionId]
   });
   return result.rows.map((r) => ({
+    id: r.id,
     tool_name: r.tool_name,
     content: r.content,
     category: r.category
   }));
 }
-async function getUnprocessedObservations(db, projectId, excludeSessionId) {
+async function getUnprocessedObservations(db, projectId, excludeSessionId, limit = CORTEX_UNPROCESSED_BATCH) {
   const result = await db.execute({
-    sql: "SELECT tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT 50",
-    args: [projectId, excludeSessionId]
+    sql: "SELECT id, tool_name, content, category, session_id FROM observations WHERE project_id = ? AND session_id != ? AND promoted = 0 ORDER BY created_at ASC LIMIT ?",
+    args: [projectId, excludeSessionId, limit]
   });
   return result.rows.map((r) => ({
+    id: r.id,
     tool_name: r.tool_name,
     content: r.content,
     category: r.category,
     session_id: r.session_id
   }));
+}
+async function countUnprocessedObservations(db, projectId) {
+  const result = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM observations WHERE project_id = ? AND promoted = 0",
+    args: [projectId]
+  });
+  return Number(result.rows[0]?.n ?? 0);
 }
 async function markObservationsPromoted(db, sessionId) {
   await db.execute({
@@ -821,11 +886,20 @@ async function markObservationsPromoted(db, sessionId) {
     args: [sessionId]
   });
 }
-async function markProjectObservationsPromoted(db, projectId) {
-  await db.execute({
-    sql: "UPDATE observations SET promoted = 1 WHERE project_id = ? AND promoted = 0",
-    args: [projectId]
-  });
+async function markObservationsPromotedByIds(db, ids) {
+  if (ids.length === 0)
+    return 0;
+  const CHUNK = 500;
+  let affected = 0;
+  for (let i = 0;i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const result = await db.execute({
+      sql: `UPDATE observations SET promoted = 1 WHERE id IN (${chunk.map(() => "?").join(",")})`,
+      args: chunk
+    });
+    affected += result.rowsAffected;
+  }
+  return affected;
 }
 async function findDuplicate(db, projectId, embedding, threshold = CORTEX_DUPLICATE_THRESHOLD) {
   const maxDistance = 1 - threshold;
@@ -1022,30 +1096,44 @@ function mergeRRF(list1, list2, limit, allItems) {
   const scores = new Map;
   list1.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
   list2.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + k)));
-  return [...scores.entries()].sort(([, a], [, b]) => b - a).slice(0, limit).map(([id]) => allItems.get(id)).filter(Boolean);
+  const ordered = [...scores.entries()].sort(([, a], [, b]) => b - a);
+  const best = ordered[0]?.[1] ?? 0;
+  const out = [];
+  for (const [id, score] of ordered.slice(0, limit)) {
+    const item = allItems.get(id);
+    if (!item)
+      continue;
+    out.push({ ...item, rrf: best > 0 ? score / best : 0 });
+  }
+  return out;
 }
 function applyMMR(candidates, queryEmb, limit, lambda = CORTEX_MMR_LAMBDA) {
-  if (!queryEmb || candidates.length <= limit)
+  if (candidates.length <= limit)
     return candidates.slice(0, limit);
   const selected = [];
   const remaining = [...candidates];
+  const embOf = (m) => m.embedding ? new Float32Array(m.embedding) : null;
+  const relevanceOf = (cand) => {
+    if (typeof cand.rrf === "number")
+      return cand.rrf;
+    if (typeof cand.similarity === "number")
+      return cand.similarity;
+    const e = embOf(cand);
+    return queryEmb && e ? cosineSimilarity(queryEmb, e) : 0;
+  };
   while (selected.length < limit && remaining.length > 0) {
     let bestIdx = 0;
     let bestScore = -Infinity;
     for (let i = 0;i < remaining.length; i++) {
       const cand = remaining[i];
-      const candEmb = cand.embedding ? new Float32Array(cand.embedding) : null;
-      if (!candEmb) {
-        bestIdx = i;
-        break;
-      }
-      const relevance = cand.similarity ?? cosineSimilarity(queryEmb, candEmb);
-      const maxSim = selected.reduce((max, s) => {
-        if (!s.embedding)
+      const candEmb = embOf(cand);
+      const relevance = relevanceOf(cand);
+      const maxSim = candEmb ? selected.reduce((max, s) => {
+        const se = embOf(s);
+        if (!se)
           return max;
-        const sim = cosineSimilarity(candEmb, new Float32Array(s.embedding));
-        return Math.max(max, sim);
-      }, 0);
+        return Math.max(max, cosineSimilarity(candEmb, se));
+      }, 0) : 0;
       const score = lambda * relevance - (1 - lambda) * maxSim;
       if (score > bestScore) {
         bestScore = score;
@@ -1096,7 +1184,17 @@ async function purgeRawMessages(db, retentionDays) {
     return 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
   const result = await db.execute({
-    sql: "DELETE FROM raw_messages WHERE created_at < ?",
+    sql: `DELETE FROM raw_messages
+          WHERE created_at < ?
+            AND NOT EXISTS (
+              SELECT 1 FROM memories m
+              WHERE m.source_session_id = raw_messages.session_id
+                AND m.trust IN ('proven', 'canonical')
+                AND m.source_start_msg_idx IS NOT NULL
+                AND m.source_end_msg_idx IS NOT NULL
+                AND raw_messages.msg_idx >= m.source_start_msg_idx
+                AND raw_messages.msg_idx <  m.source_end_msg_idx
+            )`,
     args: [cutoff]
   });
   return result.rowsAffected;
@@ -1135,6 +1233,34 @@ async function decayAndPrune(db, projectId) {
     decayed: decayResult.rowsAffected,
     pruned: pruneResult.rowsAffected
   };
+}
+async function countMemoriesMissingEmbedding(db, projectId) {
+  const result = projectId ? await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM memories WHERE embedding IS NULL AND project_id = ?",
+    args: [projectId]
+  }) : await db.execute("SELECT COUNT(*) AS n FROM memories WHERE embedding IS NULL");
+  return Number(result.rows[0]?.n ?? 0);
+}
+async function listMemoriesMissingEmbedding(db, limit, projectId) {
+  const result = projectId ? await db.execute({
+    sql: "SELECT id, content, context FROM memories WHERE embedding IS NULL AND project_id = ? ORDER BY created_at ASC LIMIT ?",
+    args: [projectId, limit]
+  }) : await db.execute({
+    sql: "SELECT id, content, context FROM memories WHERE embedding IS NULL ORDER BY created_at ASC LIMIT ?",
+    args: [limit]
+  });
+  return result.rows.map((r) => ({
+    id: r.id,
+    content: r.content,
+    context: r.context
+  }));
+}
+async function setMemoryEmbedding(db, id, embedding) {
+  const result = await db.execute({
+    sql: "UPDATE memories SET embedding = vector(?) WHERE id = ?",
+    args: [vecToSql(embedding), id]
+  });
+  return result.rowsAffected > 0;
 }
 async function snapshotFileHashes(db, projectId, hashes) {
   const now = Date.now();
@@ -1248,6 +1374,7 @@ var init_tokens = () => {};
 var exports_transcript = {};
 __export(exports_transcript, {
   sliceRange: () => sliceRange,
+  sanitizeTranscript: () => sanitizeTranscript,
   readTranscript: () => readTranscript,
   persistRawMessages: () => persistRawMessages,
   captureTranscript: () => captureTranscript
@@ -1307,12 +1434,23 @@ async function persistRawMessages(db, sessionId, messages, now = Date.now()) {
   }
   return inserted;
 }
+function sanitizeTranscript(messages) {
+  const out = [];
+  for (const m of messages) {
+    const content = stripPrivate(m.content);
+    if (content === null)
+      continue;
+    out.push({ ...m, content });
+  }
+  return out;
+}
 async function captureTranscript(db, sessionId, transcriptPath) {
   const transcript = readTranscript(transcriptPath);
   if (transcript.length === 0)
-    return [];
-  await persistRawMessages(db, sessionId, transcript);
-  return transcript;
+    return { messages: [], total: 0 };
+  const safe = sanitizeTranscript(transcript);
+  await persistRawMessages(db, sessionId, safe);
+  return { messages: safe, total: transcript.length };
 }
 var init_transcript = __esm(() => {
   init_db();

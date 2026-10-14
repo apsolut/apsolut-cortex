@@ -2,10 +2,28 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { coerceCategory, coerceTier, clampText, CONTENT_MAX, CONTEXT_MAX } from "./validate.js";
+import { CORTEX_ANTHROPIC_MODEL, CORTEX_OLLAMA_MODEL } from "./config.js";
 
 const BREAKER_PATH = join(homedir(), ".apsolut-cortex", "compression-state.json");
 const MAX_FAILURES = 3;
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Is any compression provider even configured?
+ *
+ * The breaker exists to stop hammering a provider that is failing. "You never
+ * set a key and have no Ollama" is not that — it is a settings problem, and
+ * counting it as provider flakiness means a user who installs cortex, racks
+ * up failures, and *then* sets ANTHROPIC_API_KEY stays locked out for the
+ * rest of the cooldown hour for no reason.
+ */
+export function providerConfigured(): boolean {
+  return Boolean(
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.OLLAMA_HOST ||
+    process.env.APSOLUT_CORTEX_OLLAMA_MODEL
+  );
+}
 
 export interface BreakerState { failures: number; lastFailure: number }
 
@@ -40,6 +58,18 @@ function resetBreaker(): void {
 
 export function getBreakerState(): BreakerState {
   return readBreaker();
+}
+
+/**
+ * Clear the breaker by hand. `doctor` can report an open breaker but had no
+ * way to close one, so "I fixed my API key and nothing is being remembered"
+ * had no remedy short of deleting a file in `~/.apsolut-cortex/` that is not
+ * documented anywhere.
+ */
+export function clearBreaker(): BreakerState {
+  const previous = readBreaker();
+  resetBreaker();
+  return previous;
 }
 
 export interface ExtractedMemory {
@@ -105,7 +135,7 @@ async function compressWithAnthropic(
     .join("\n\n---\n\n");
 
   const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
+    model: CORTEX_ANTHROPIC_MODEL,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [
@@ -129,7 +159,7 @@ async function compressWithOllama(
   project: string
 ): Promise<CompressionResult> {
   const OLLAMA_URL = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-  const MODEL = process.env.APSOLUT_CORTEX_OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  const MODEL = CORTEX_OLLAMA_MODEL;
 
   const obsText = observations
     .map((o, i) =>
@@ -217,7 +247,10 @@ export async function compressSession(
 
   // Circuit breaker: skip if too many recent failures
   if (isBreakerOpen()) {
-    console.error("[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h)");
+    console.error(
+      "[apsolut-cortex] Compression circuit breaker open — skipping (retries in ~1h). " +
+      "If you just fixed the provider, run: apsolut-cortex db reset-breaker"
+    );
     return null;
   }
 
@@ -240,7 +273,11 @@ export async function compressSession(
     console.error("[apsolut-cortex] Used Ollama for compression.");
     return result;
   } catch (e) {
-    recordFailure();
+    // Only count this against the breaker if something was actually
+    // configured to fail. With no provider at all, the banner below is the
+    // whole story — opening a one-hour circuit on top of it just delays
+    // recovery for the user who reads the banner and sets a key.
+    if (providerConfigured()) recordFailure();
     const msg = [
       "",
       "╔══════════════════════════════════════════════════════════════╗",

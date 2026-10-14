@@ -6,8 +6,9 @@
  * ranges into this table so `memory_recall` can return exact wording
  * when the compressed memory is ambiguous.
  *
- * Retention: APSOLUT_CORTEX_RAW_RETENTION_DAYS (default 90). The cleanup
- * job lands with M8's is_pinned work; until then all rows are retained.
+ * Retention: APSOLUT_CORTEX_RAW_RETENTION_DAYS (default 90), enforced by
+ * `purgeRawMessages` on SessionEnd. Rows inside the source range of a
+ * `proven` or `canonical` memory are exempt and kept indefinitely.
  */
 
 import type { Client } from "@libsql/client";
